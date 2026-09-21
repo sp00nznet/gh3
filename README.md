@@ -32,7 +32,17 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
 ## Where it stops
 
-It reads its asset table-of-contents correctly and then stops opening files:
+It gets to **`cellGcmInit`** and then stops making forward progress. The last
+HLE call of the boot is
+
+```
+[HLE] _cellGcmInitBody(ctx_out=0x1081D2F0, cmdSize=0x10000, ioSize=0x200000, ioAddr=0x40100000)
+```
+
+and nothing graphics-related follows it: no display buffers, no flip, zero draw
+packets reaching the engine.
+
+It reads its asset table-of-contents correctly on the way:
 
 ```
 [fs] open '/dev_bdvd/PS3_GAME/USRDIR/DATA//COMPRESSED/PS3/COMPRESS.TOC.PS3' -> fd 3
@@ -40,19 +50,34 @@ It reads its asset table-of-contents correctly and then stops opening files:
 [fs] open FAIL '/dev_bdvd/PS3_GAME/USRDIR/DATA/SCRIPTS/ENGINE/ENGINE_PARAMS.QB.PS3'
 ```
 
-**Two opens in a whole run, and no third.** The failed one is expected — the
-scripts live in `COMPRESSED/PS3/PAK/QB.PAK.PS3` + `QB.PAB.PS3`, and Neversoft
-probes the loose path first — but the fall-back to the PAK never happens. The
-disc has 591 PAKs (1.1 GB) that are never touched.
+**Two opens in a whole run and no third.** The failed one is expected — the
+scripts live in `COMPRESSED/PS3/PAK/QB.PAK.PS3` + `QB.PAB.PS3` and Neversoft
+probes the loose path first — but the 591 PAKs (1.1 GB) are never touched.
 
-Meanwhile the title is alive and cycling, not deadlocked. A syscall trace shows
-exactly one syscall, `141` (`sys_timer_usleep`), and the watchdog names
-consecutive samples as `sys_spinlock_unlock` then `sys_spinlock_lock` — a
-worker loop waiting on something, spinning at ~50 fps with 0 draw packets.
+### What has been ruled out
 
-**So the open question is what that loop is waiting for between reading the TOC
-and loading the first PAK.** It is not a missing file, not a wrong error code
-(`CELL_FS_ENOENT` is correct), and not a dead thread.
+Most of the obvious suspects are eliminated, which is the useful part:
+
+* **Not the async filesystem.** The 1 ms `sys_timer_usleep` loop that dominates
+  a syscall trace is `CAsyncFileSys::sThreadUpdate` (guest tid 3, entry
+  `0x00A257A0`) running its **service loop correctly** — it pumps, sleeps 1 ms,
+  and spins only while a quit flag at `0x106A5B48` stays zero. That is the
+  thread working, not hanging, and I mistook it for the stall first time round.
+* **Not a missing file or a wrong error code.** `CELL_FS_ENOENT` is correct and
+  the file genuinely is not on disc.
+* **Not SPURS.** There is no SPURS activity at all yet — the title never gets
+  as far as submitting SPU work, so the empty `src/spu_gen/` is not the cause.
+* **Not a dead thread.** Both guest threads (`NetThreadUpdate`,
+  `CAsyncFileSys::sThreadUpdate`) start and run.
+
+**What the main thread is doing:** its own heap allocator. The HLE tail is
+`sys_mmapper_allocate_memory` → `sys_mmapper_map_memory` → `sys_lwmutex_lock`
+and then `sys_spinlock_lock`/`unlock` pairs forever — that pairing is GH3's
+spinlock-protected allocator, hot rather than wedged.
+
+So the open question is why, having initialised GCM and its heap, the main
+thread never queues the first PAK read through the async filesystem that is
+sitting there idle waiting for work.
 
 ### One trap already cleared
 
