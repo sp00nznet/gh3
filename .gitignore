@@ -1,0 +1,7 @@
+build*/
+game/
+vfs/
+analysis/
+src/recomp/
+src/gen/
+*.map
