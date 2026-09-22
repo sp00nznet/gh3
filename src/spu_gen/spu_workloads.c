@@ -28,6 +28,15 @@ extern void spu_0004_at_00C07280_spu_recomp_register(void);
  * extract_spu_images.py cannot see it; captured with SPU_DUMP_MISS and lifted
  * by tools/relift.sh. Re-add this block if the registry is regenerated. */
 extern void jobpm_spu_recomp_register(void);
+
+/* HAND-ADDED -- the job body the PM streams in as an OVERLAY.
+ * The PM DMAs it from guest 0x1011A300 (0x1790 bytes) to LS 0x5000 and
+ * branches into it, so it is never dispatched and the workload registry
+ * cannot see it. Without a lifted body the SPU INTERPRETS it, which works but
+ * is ~100x slower -- 9.5 minutes of real time did not finish one decompress.
+ * Lifted at --base 0x5000 so its addresses equal the LS ones, and registered
+ * under image 6 so the indirect-branch lookup finds it. */
+extern void jobbody_spu_recomp_register(void);
 extern void jobpm_spu_func_00000000(spu_context* ctx);
 
 void gh3_spu_register_all(void)
@@ -43,6 +52,7 @@ void gh3_spu_register_all(void)
     spu_begin_image(5); spu_0004_at_00C07280_spu_recomp_register();
     spu_workload_register_img(0xA8449E004479187EULL, spu_0004_at_00C07280_spu_func_00003010, 5, "spu_0004_at_00C07280");
     spu_begin_image(6); jobpm_spu_recomp_register();
+    jobbody_spu_recomp_register();   /* overlay at LS 0x5000, same image */
     spu_workload_register_img(0x21F48A8621295E5AULL, jobpm_spu_func_00000000, 6, "jobpm");
     spu_begin_image(0);
 }

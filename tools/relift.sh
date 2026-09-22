@@ -61,3 +61,21 @@ if [ -f "$JOBPM" ]; then
 else
     echo "missing $JOBPM -- capture it with SPU_DUMP_MISS first"
 fi
+
+# ---- the job BODY the PM streams in as an overlay --------------------------
+# The workload PM DMAs this from guest 0x1011A300 (0x1790 bytes) to LS 0x5000
+# and branches into it, so it is never dispatched and the workload registry
+# never sees it. Without a lifted body the SPU INTERPRETS it: correct, but far
+# too slow -- 9.5 minutes of wall clock did not finish one decompression.
+# Lifted, the same job completes in seconds and the boot advances past the
+# GLOBAL zone. Extracted straight from the EBOOT (it is file-backed).
+JOBBODY=spu_miss/jobbody_1011A300_6544.bin
+if [ -f "$JOBBODY" ]; then
+    # --base 0x5000: it is loaded at LS 0x5000, so lifted addresses must equal
+    # the local-store ones for the indirect-branch lookup to find them.
+    python "$PS3RECOMP/tools/find_spu_functions.py" "$JOBBODY" --raw --base 0x5000         --out spu_miss/jobbody_funcs.json
+    rm -rf src/spu_gen/jobbody && mkdir -p src/spu_gen/jobbody
+    python "$PS3RECOMP/tools/spu_lifter.py" "$JOBBODY" --base 0x5000         --functions spu_miss/jobbody_funcs.json         --symbol-prefix jobbody_ -o src/spu_gen/jobbody
+    echo "NOTE: re-add the jobbody block to src/spu_gen/spu_workloads.c --"
+    echo "      it registers under image 6, alongside the PM."
+fi
