@@ -33,8 +33,11 @@ set(PS3RECOMP_RUNTIME_LIB "${PS3RECOMP_DIR}/build-gate/ps3recomp_runtime.lib"
 # Lifted game code + generated HLE NID table (both git-ignored; tools/relift.sh).
 file(GLOB RECOMP_SOURCES "src/recomp/*.cpp")
 file(GLOB GEN_SOURCES    "src/gen/*.cpp" "src/gen/*.c")
-# No src/spu_gen yet: GH3's SPURS jobs have not been captured. The title is
-# expected to boot without them; jobs that never dispatch will say so.
+# The title's five SPU images, lifted. These are ordinary embedded ELFs in the
+# EBOOT (extract_spu_images.py finds them), not raw blobs needing an
+# SPU_DUMP_MISS capture run -- and GH3 runs them as SPURS *tasks*, which is a
+# different path from job-chain dispatch. src/spu_gen/spu_workloads.c registers
+# them with the runtime's fingerprint registry from a constructor.
 file(GLOB_RECURSE SPU_SOURCES "src/spu_gen/*.c")
 if(NOT RECOMP_SOURCES)
     message(FATAL_ERROR "src/recomp/ is empty -- run tools/relift.sh first")

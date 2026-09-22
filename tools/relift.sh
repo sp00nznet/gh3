@@ -22,3 +22,19 @@ python "$PS3RECOMP/tools/ppu_lifter.py" game/EBOOT.elf \
     -o src/recomp
 
 python "$PS3RECOMP/tools/gen_hle_nids.py" --all --out src/gen/ppu_hle_nids.cpp
+
+# ---- SPU -------------------------------------------------------------------
+# Unlike Simpsons (whose SPURS job binaries are raw blobs built in main memory
+# and have to be captured at dispatch with SPU_DUMP_MISS), GH3's five SPU images
+# are ordinary embedded ELFs in the EBOOT, so extract_spu_images.py finds them
+# and no capture run is needed. The title creates them as SPURS *tasks*
+# (cellSpursCreateTask, entries 0x101A3380 / 0x101C7280), which is a different
+# path from the job-chain dispatch SPU_DUMP_MISS hooks -- so that env would
+# never have produced anything here.
+python "$PS3RECOMP/tools/extract_spu_images.py" game/EBOOT.elf --out analysis/spu
+
+rm -rf src/spu_gen && mkdir -p src/spu_gen
+python "$PS3RECOMP/tools/build_spu_workloads.py" \
+    --images analysis/spu --lifted src/spu_gen \
+    --out src/spu_gen/spu_workloads.c \
+    --register-fn gh3_spu_register_all --constructor --title gh3

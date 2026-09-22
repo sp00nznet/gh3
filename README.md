@@ -32,92 +32,72 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
 ## Where it stops
 
-It gets to **`cellGcmInit`** and then stops making forward progress. The last
-HLE call of the boot is
+It boots, loads its first assets, brings up SPURS with two tasks, and reaches
+its **boot/legal screen load** — then presents nothing. Files it opens now:
 
 ```
-[HLE] _cellGcmInitBody(ctx_out=0x1081D2F0, cmdSize=0x10000, ioSize=0x200000, ioAddr=0x40100000)
+DATA//COMPRESSED/PS3/COMPRESS.TOC.PS3          the asset table of contents
+DATA/SCRIPTS/ENGINE/ENGINE_PARAMS.QB.PS3       the first script
+DATA/COMPRESSED/PS3/PAK/QB.PAK.PS3 + QB.PAB    the script bundle
+DATA/COMPRESSED/PS3/FXFILES/MATERIALLIBRARY.BIN.PS3
+DATA/.../IMAGES/LOADINGSCREENS/BOOT_LEGAL.IMG + .IMV
+DATA/.../IMAGES/LOADINGSCREENS/LOAD_WHEEL.IMG + .IMV
+DATA/ANIMS/STANDARDKEYQ.BIN, STANDARDKEYT.BIN
+DATA/COMPRESSED/PS3/PAK/CUTSCENE_INFOS.PAK, GLOBAL_AD_TEX.PAK + _VRAM
 ```
 
-and nothing graphics-related follows it: no display buffers, no flip, zero draw
-packets reaching the engine.
+14 opens, **zero failures**. 5,464 command packets reach the draw engine and all
+5,464 groups execute — but they are **empty** (`empty=10921`), so nothing is
+drawn and every presented frame is black. That is the current frontier: the
+title is submitting command groups that carry no geometry.
 
-It reads its asset table-of-contents correctly on the way:
+### The hang that was here, and what it actually was
 
-```
-[fs] open '/dev_bdvd/PS3_GAME/USRDIR/DATA//COMPRESSED/PS3/COMPRESS.TOC.PS3' -> fd 3
-[fs] read fd=3 nbytes=14336 -> 14336 (magic=544F4331, total=14336)   <- "TOC1", full read
-[fs] open FAIL '/dev_bdvd/PS3_GAME/USRDIR/DATA/SCRIPTS/ENGINE/ENGINE_PARAMS.QB.PS3'
-```
-
-**Two opens in a whole run and no third.** The failed one is expected — the
-scripts live in `COMPRESSED/PS3/PAK/QB.PAK.PS3` + `QB.PAB.PS3` and Neversoft
-probes the loose path first — but the 591 PAKs (1.1 GB) are never touched.
-
-### The hang, root-caused
-
-The main thread pins a core and never loads an asset. Traced end to end:
+The port previously wedged with **48 million iterations** in a loop, pinning a
+core, and the chain is worth recording because almost none of it was the port's
+fault:
 
 ```
-func_0026334C        builds a name on the stack, then
-  func_00263014      LOOKS SOMETHING UP  ->  returns NULL        <-- the bug
-  func_00270F60      passes that NULL straight on as a container
-    func_00264134    iterates it:
-                         end = obj + obj->size;   cur = obj + 0x1C;
-                         while (end != cur) cur = step(cur);
+func_0026334C     formats "scripts\engine\engine_params.qb.ps3"
+  func_00263014   resource get-or-create
+    func_004D0820 FILE LOAD -> returns NULL   (the file was not on disc)
+  func_00270F60   passes that NULL on as a container
+    func_00264134 iterates it:
+                    end = obj + obj->size;  cur = obj + 0x1C;
+                    while (end != cur) cur = step(cur);
 ```
 
-With `obj == NULL`, `obj->size` reads as **0**, so `end` is 0 while `cur`
-starts at 0x1C. The loop terminates on **equality**, which can now never
-happen — so it runs **48 million iterations** in 70 seconds, climbing through
-2.8 GB of address space, allocating and freeing a ~20-byte node each time.
+With `obj == NULL`, `obj->size` reads as 0, so `end` is 0 while `cur` starts at
+0x1C, and an **equality**-terminated loop that can never be equal runs forever.
 
-On real hardware this never gets that far: the PS3 leaves the first 64 KB
-unmapped, so `obj->size` through a NULL pointer is a data-storage exception and
-the title dies on the spot holding the pointer. Our VM is flat and
-demand-committed, so address 0 reads back as zero and the fault degrades into a
-silent infinite loop. ps3recomp now reports it (`[null-read]`, added for this),
-which names the chain in one run — it took six probe-and-rebuild cycles by hand.
+**The root cause was a truncated disc extraction**, not the recompilation: 1,004
+of 2,910 files were missing, including `ENGINE_PARAMS.QB.PS3`, because a
+background extract was still running when the tree was moved. Re-extracting
+fixed the hang outright — 1 failed open became 0, and the title went from 2 file
+opens to 14.
 
-**So the open question is narrow: why does `func_00263014` return NULL?** It is
-handed a freshly formatted string and returns a pointer, and it fails on the
-very first call — which lines up with the title never opening a PAK.
+Two things are worth keeping from it anyway. On real hardware that NULL
+dereference is a data-storage exception and the title dies instantly holding the
+pointer; our flat VM reads address 0 as zero, so a fatal bug degrades into a
+silent hang. ps3recomp now reports NULL reads (`[null-read]`) and names the
+chain in one run, where cornering it by hand took six probe-and-rebuild cycles.
+And **verify the extraction before blaming the port** — this is the second port
+in a row (after Virtua Fighter 5) whose "bug" was the data on disk.
 
-### What has been ruled out
+### Two diagnostics lied on the way, both fixed upstream
 
-Most of the obvious suspects are eliminated, which is the useful part:
+* The watchdog reported the wedge as **`cellPadInit`** — for a game that cannot
+  start without a guitar controller, a very convincing wrong answer. It never
+  recorded names for `ps3_hle_register_ctx` handlers (the whole sysPrxForUser
+  surface), so it printed whichever *table* handler ran last.
+* A host-stack backtrace through lifted code produced a confident five-frame
+  call chain that direct call counters proved was **fiction** — every function
+  in it runs exactly once. The lifted TU has no unwind tables, which the
+  sampling profiler already documents; `ctx->lr` is the chain to trust.
 
-* **Not the async filesystem.** The 1 ms `sys_timer_usleep` loop that dominates
-  a syscall trace is `CAsyncFileSys::sThreadUpdate` (guest tid 3, entry
-  `0x00A257A0`) running its **service loop correctly** — it pumps, sleeps 1 ms,
-  and spins only while a quit flag at `0x106A5B48` stays zero. That is the
-  thread working, not hanging, and I mistook it for the stall first time round.
-* **Not a stuck spinlock.** The `sys_spinlock_lock`/`unlock` storm is GH3's own
-  allocator being hot. ps3recomp's stuck-lock detector (added for this) never
-  fires, which is what ruled it out.
-* **Not a missing file or a wrong error code.** `CELL_FS_ENOENT` is correct and
-  the file genuinely is not on disc.
-* **Not SPURS.** There is no SPURS activity at all yet, so the empty
-  `src/spu_gen/` is not the cause.
-* **Not a dead thread.** Both guest threads start and run.
-
-**Two diagnostics lied on the way, both now fixed upstream.** The watchdog
-reported the wedge as `cellPadInit` (it never recorded names for
-`ps3_hle_register_ctx` handlers, so it printed whichever *table* handler ran
-last) — for a game that needs a guitar controller, a very convincing wrong
-answer. And a host-stack backtrace through lifted code produced a confident
-five-frame call chain that direct call counters proved was **fiction**: every
-function in it is called exactly once. The lifted TU has no unwind tables, which
-the sampling profiler already documents; `ctx->lr` is the trustworthy chain.
-
-### One trap already cleared
-
-The watchdog originally reported this wedge as **`cellPadInit`**, which for a
-game that cannot start without a guitar controller is a very convincing wrong
-answer. It was a runtime bug: the `g_ctx[]` dispatch path — the whole
-sysPrxForUser/CRT surface — never recorded the handler name, so the watchdog
-printed whichever *table* handler ran last. Fixed upstream; it now says
-`sys_spinlock_unlock`.
+Also added upstream and used here: a stuck-spinlock detector that names the
+holding thread and flags self-deadlock. Its *silence* is what ruled the
+spinlocks out.
 
 ## Building
 
