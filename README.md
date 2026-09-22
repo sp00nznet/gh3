@@ -92,24 +92,29 @@ A back-chain walk (`[GSTACK] chain:`, ELFv1: back chain at `[sp]`, lr at
 `back_chain+0x10`) gives the real callers, ending at the CRT entry:
 
 ```
-memset <- func_0023EE10+0x8C <- func_0005AC94+0x64 <- func_0005BFC0+0xD0 (x2)
-       <- func_00064288+0xC0 <- func_00069DFC+0xAE8 <- func_0006AC90+0x1D0
-       <- func_0006B654+0x3A8 <- func_002898C4+0x3DC <- func_002877CC+0xD0
-       <- func_0028BB14+0x18C <- func_00526AB4+0x4F8 <- func_00113BB4+0x100 (x4)
-       <- func_005229A4+0xD80 <- func_00010250+0x154 <- func_00010244+0x8
+<reader> <- func_00648A30+0x7C <- func_00664C38+0x254 <- func_0023EE10+0x8C
+         <- func_0005AC94+0x64 <- func_0005BFC0+0xD0 (x2) <- func_00064288+0xC0
+         <- func_00069DFC+0xAE8 <- func_0006AC90+0x1D0 <- func_0006B654+0x3A8
+         <- func_002898C4+0x3DC <- func_002877CC+0xD0 <- func_0028BB14+0x18C
+         <- func_00526AB4+0x4F8 <- func_00113BB4+0x100 (x4)
+         <- func_005229A4+0xD80 <- func_00010250+0x154 <- func_00010244+0x8
 ```
 
 **This is startup init, not decompression.** `func_005229A4` is the same init
-function that calls the memory-pool setup. Earlier notes here blamed
-`func_004BF614` (the decompressor) -- that came from the stack SCAN, which
-reports any stack word that looks like a return address including dead slots
-from frames that already returned. The scan named `func_0041DB10`,
-`func_003F8EA0` and `func_004BF614`; none of them are in the real chain. Trust
-`chain:`, not `sp=...:`.
+function that calls the memory-pool setup. `func_004BF614`, the decompressor,
+is not in the chain at all -- that attribution came from the stack SCAN, which
+reports any stack word that looks like a return address, dead slots included.
 
-Note the walk prints RETURN addresses, so it never names the innermost frame --
-the function that actually made the failing call is the one missing from the
-top of that list.
+Two traps, both of which produced confident wrong answers here:
+
+- **The walk was silently truncated.** Both walkers filtered candidate return
+  addresses with a hardcoded `< 0x600000`. This title's text runs to
+  `0x009CD550`, so every frame between the two was dropped -- most of the
+  engine. Four walks from four different frames returned the IDENTICAL chain,
+  which is the tell. The bound now comes from the function table
+  (`ppu_code_hi()`); the first three frames above only appeared after that fix.
+- The walk prints RETURN addresses, so the innermost frame -- the function that
+  actually made the failing call -- is the one missing from the top.
 
 ### Root cause: a vtable address used as an object pointer
 
@@ -141,22 +146,25 @@ Every value verified against the raw ELF bytes.
 vtable address where an object belongs, which is what `*(obj)` gives you if it
 is dereferenced once too many.
 
-Which function holds it is NOT pinned, and two plausible-looking answers have
-already been wrong. The read is sampled as `func_006637AC`, whose `r3` becomes
-`r25` at entry -- but a watch on `[r3 + 0x78]`, which that function reads at
-entry, never fires for `0x101047A0`, so it was not entered with it. Its only
-direct caller `func_00663B84` is invoked with `r3 = 0x0FEFA804`, a perfectly
-ordinary stack object (confirmed by `PS3_CALLTRACE_TO=00663B84`), and
-`func_00662A28` in between has a single exit that does restore r31.
+**Which frame holds it is still open**, and three plausible answers have now
+been wrong in a row. Ruled out by measurement:
 
-The sampled `guest-fn` is a host return address and identical code folding
-makes it ambiguous, so treat it as a hint. The next step is to pin which frame
-owns `r25 = 0x101047A0` -- a watch on `0x101047B8` fires exactly once and dumps
-the full register file, so that is the run to build on.
+- `func_006637AC` entered with it -- no. A watch on `[r3+0x78]`, which it reads
+  unconditionally at entry, never fires for `0x10104818`.
+- its only direct caller `func_00663B84` -- no. `PS3_CALLTRACE_TO=00663B84`
+  shows `r3 = 0x0FEFA804`, an ordinary stack object, and `func_00662A28` in
+  between has a single exit that does restore r31.
+- that stack object's `+0x18` field -- no. A watch on `0x0FEFA81C` shows the
+  TOC written there by HOST code (`guest-fn=0x00000000`), never `0x00A331A0`.
 
-Handy: `[GSTACK]` now prints the whole GPR file, so one run gives every
-register rather than whichever two were guessed in advance. `PPU_RWATCH` dumps
-the chain and registers on its first hit, which is how r25 was caught.
+The `0x101047B8` read that `PPU_RWATCH` catches first is a DIFFERENT read from
+the one feeding the hash insert -- conflating them cost two runs. Note also
+that callee-saved shadows are fine: of 434 real tail calls in functions using
+them, exactly one is missing a restore, and it is unrelated library code.
+
+The tooling is now good enough to settle this: fixed stack walk, whole GPR file
+on every dump, and `PPU_RWATCH` with a chain. What it needs is a watch that
+fires on the read feeding `func_00647BEC`, not the first read of that address.
 
 ### Heap selection works; the null heap is a red herring
 
