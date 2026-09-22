@@ -120,11 +120,38 @@ against 24 signals sent -- it parks, is woken, runs nothing, re-parks. The
 existing `SPURS_EF_SPU_REPLY=2` probe does not fire for it (its wait object is
 zero), so that path does not apply.
 
+### The SPU side: a livelock on the job queue head
+
+The job policy module (image 6) is not idle and not stuck in a wait -- it is
+spinning on a lock-line atomic:
+
+```
+[putllc-ok] 62800001: img=6 ea=0x101FF100      62.8 MILLION successful PUTLLCs
+```
+
+`0x101FF100` is the job queue header inside the job manager at `0x101FF000`.
+The PPU sets it up and submits into it (`0x101FF118` = array base `0x13598A00`,
+`0x101FF11C` = 0x3E = 62 slots, then `0x101FF104`/`0x101FF110` = 1 per submit).
+The SPU takes the line, succeeds at the atomic, and goes round again forever.
+The PUTLLCs SUCCEED -- this is not the reservation-loss livelock the repo has
+hit before, it is a loop that makes no progress while winning every atomic.
+
+It does do real work first: `cmd=0x40` GETs pull 16 KB input chunks into LS
+`0x8880`..`0x14880` and `cmd=0x20` PUTs write 16 KB output chunks back, 22 in
+and 35 out. That is only ~0.5 MB of a 24 MB file, so it stalls EARLY in the
+decompression, not at the end.
+
+Note the SPU never PUTs to the job array (`0x13598xxx`) at all -- it only GETs
+`0x13598CC4`. So whatever set the polled slot to `[+0]=0, [+0x1C]=1` did not
+come through a traced DMA, and `PPU_WWATCH` cannot see SPU-side writes. That is
+the next thing to nail down, and the address has a history: `0x101FF100` has
+produced four wrong readings in earlier sessions ("full ring nobody drains",
+"no PPU consumer", "62-item work list consumed to item 46", "SPU advances the
+consumer index"). Measure it; do not narrate it.
+
 Three imports are also unresolved, one called 38 times -- `0xDF6476BD`
 (cellGcmSys), `0x32B94ADD` (cellSpurs), `0x6C960F6D`
-(`cellSpursGetSpuThreadId`). All three SPU images resolve and dispatch
-(`fp=0x21F48A8621295E5A` = image 6, the job policy module), so the job system
-is alive; the job body is what never finishes.
+(`cellSpursGetSpuThreadId`).
 
 ### What is NOT wrong (measured, so it does not get re-derived)
 
