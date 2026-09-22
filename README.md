@@ -146,9 +146,10 @@ Every value verified against the raw ELF bytes.
 vtable address where an object belongs, which is what `*(obj)` gives you if it
 is dereferenced once too many.
 
-**Which frame holds it is still open.** With the walk fixed, the call SITES
-are solid (the walk prints return addresses, so each entry names where the
-frame below it was called from):
+**How `r25` becomes a vtable is unresolved, and the obvious reading is wrong.**
+
+Call SITES are solid now that the walk is fixed (the walk prints return
+addresses, so each entry names where the frame below it was called from):
 
 ```
 func_00647BEC   <- called at 0x00663A40, in func_006637AC
@@ -157,27 +158,27 @@ func_00647BEC   <- called at 0x00663A40, in func_006637AC
                 <- called at 0x0023EE98, in func_0023EE10   (startup init)
 ```
 
-`func_006637AC` does `r25 = r3` at entry and later
-`table = [r25 + 0x18] + 0xC`, and `[0x101047A0 + 0x18]` is `0x00A331A0`, which
-gives exactly the observed `0x00A331AC`. So `r25 = 0x101047A0` at the point of
-use is certain. What is NOT explained is how it got there:
+`func_006637AC` does `r25 = r3` at entry -- the only place it sets r25 -- and
+later `table = [r25 + 0x18] + 0xC`. With `r25 = 0x101047A0` that reads
+`0x101047B8` = `0x00A331A0`, giving exactly the measured `0x00A331AC`. A read
+watch confirms `0x101047B8` is read exactly once.
 
-- `func_006637AC` was **not entered** with it. It reads `[r3+0x78]`
-  unconditionally two lines after `r25 = r3`, and a watch on `0x10104818` never
-  fires.
-- nothing **writes** `0x101047A0` either -- `func_00648A30` stores its
-  allocation to `[r3+0]`, so had it been called with the vtable it would have
-  scribbled on it; a watch there is silent.
-- the address is never built as a literal, and its three static homes are in
-  `ph1` at TOC offsets far outside the +/-32K window.
+But `func_006637AC` is **never entered with any vtable**. It reads `[r3+0x78]`
+unconditionally two lines after `r25 = r3`, and a read watch over the whole
+region `0x10104340..0x10104840` catches only five reads, none of them at
+`+0x78` of any of the three candidate vtables.
 
-That leaves r25 being clobbered by a callee between `func_006637AC`'s entry and
-the use. Worth knowing before chasing it: of 434 real tail calls in functions
-using `_cs_` shadows exactly one misses a restore (unrelated library code), but
-12,345 functions write a callee-saved GPR with neither a shadow nor a stack
-reload -- mostly the lifter's split continuations, which makes that scan too
-noisy to use as-is. Narrowing it to callees actually on this path is the next
-step.
+Do not conclude "a callee clobbered r25" without checking: `func_006637AC`
+makes exactly two calls, both to `func_00647BEC`, and nothing in that subtree
+(`func_00647BEC`, `func_00649694`, `func_006495CC`, `func_0065AA24`, the
+memset) writes r25 at all. `func_006479BC` does write r25 as scratch, but it
+restores it at its single exit.
+
+**Caution for the next attempt:** the memset runs INSIDE `func_006479BC`, after
+that scratch write -- so r25 in any sample taken during the memset is
+`func_006479BC`'s scratch, not the object. Several readings here conflated the
+two. Sample r25 at `func_00647BEC`'s entry instead, and treat the sampled
+`guest-fn` as a hint (identical code folding makes it ambiguous).
 
 ### Heap selection works; the null heap is a red herring
 
