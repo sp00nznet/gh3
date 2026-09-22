@@ -119,11 +119,29 @@ before nothing in the process touched it.
 
 ### What is stuck now
 
-The wait is `[job+0x00] + [job+0x1C] == 0`. The SPU now clears `+0x00` and sets
-`+0x1C`, and nothing ever clears `+0x1C` -- `PPU_RWATCH` finds the waiter as
-its only reader, so no PPU collector exists and the SPU must be the one to do
-it. Poking **only** that field advances the boot 14 -> 17 files, through the
-full 24 MB GLOBAL zone, so it is the single remaining gap in this handshake.
+Two separate problems sit here, and one of them is solved.
+
+**Solved: a multi-lane PUTLLC livelock.** The job workload ran on four
+simulated SPUs (`spurs_policy.c` keeps a persistent context per
+`(wid, spu_num)`; `SPU_CTX_LOG=1` enumerates them), and they contended its
+lock line hard enough to livelock -- 286 million `MFC_RdAtomicStat` reads,
+every PUTLLC failing "no reservation". `SPURS_FORCE_SPUS=1` clears it
+completely: one policy context, zero PUTLLC failures. That matches this
+repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
+`WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
+jobmanager runs one SPU at a time) and far more stable.
+
+**Not solved: the job is claimed and never released.** The wait is
+`[job+0x00] + [job+0x1C] == 0`. The SPU clears `+0x00` and sets `+0x1C` --
+claiming the job -- and never clears it. Single-lane does not change that:
+the SPU still issues ~96M atomics, now all SUCCEEDING, so it is polling some
+condition in guest code that never becomes true while holding the job.
+
+Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
+GLOBAL zone, so that field is the single remaining gap in this handshake.
+
+Run recipe while this stands:
+`PS3_VFS_ROOT=vfs RSX_LIVE_DRAW=1 SPURS_FORCE_SPUS=1 ./build/gh3 ...`
 
 ### How the main thread was finally located
 
