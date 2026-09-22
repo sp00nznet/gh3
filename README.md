@@ -59,23 +59,48 @@ global, and with it pinned the run takes 12.7 million NULL dereferences
 (`[null-read] ... by guest-fn=0x001C3A74`, 1 without it). It proves what the
 blocker is; it does not fix it.
 
-### Why the SPU side does nothing
+### The SPU is NOT idle — it decompresses and never gets told to stop
 
-GH3 runs two SPURS tasksets. Both dispatch and both run — and task 0 wakes on
-every signal and **runs 0 ms**, thousands of times:
+An earlier reading of this said the SPU did nothing. That was wrong, and the
+tool was at fault: `SPU_DMATRACE` takes an **image id**, not a boolean, so
+`SPU_DMATRACE=1` traced image 1 and reported silence for image 4. With
+`SPU_DMATRACE=4` the task is busy:
 
 ```
-[spu_workload] signal task 0 (taskset ...)
-[spu_workload] WAIT_SIGNAL#9500 enter task=0 taskset=... ran=0ms
-[spu] SPURS taskset syscall num=2 ... image=4
+[DMA] img4 cmd=0x40 ea=0x014BEA810 size=0x120   GET  work descriptor
+[DMA] img4 cmd=0x20 ea=0x05800C000 size=0x2000  PUT  8 KB of output
 ```
 
-Five SPU images are lifted and registered. Only **images 4 and 5 ever dispatch**
-— the two taskset contexts. Images 1-3, which are the task bodies, never run at
-all. So what executes is the taskset shell cycling WAIT_SIGNAL, never the task's
-own ELF, and the decompressor inside it is never reached. That is the same SPU
-middleware gap that has Virtua Fighter 5, Tokyo Jungle and YDKJ stuck, and it is
-the next thread to pull.
+It writes sequential 8 KB blocks to `0x58000000`, `0x58004000`, `0x58006000`,
+... — which is task 0's own `arg[0]`. That is decompression output.
+
+The SPURS handshakes are healthy too. `SPU_ATOM_EA` shows the full event-flag
+protocol running cleanly on `0x107B7800` (direction 2, SPU→PPU): the task
+registers its wait slot (`+0x08` high half → `0x8000`), parks, wakes on the bit
+the PPU sets at `+0x00`, consumes it, clears its slot — 83 clean cycles. The
+PPU side wakes 40 times on `0x107B7880` with `got=0x0001`, and the per-frame
+Set/Wait pair in `func_005D2E9C` cycles **16,408** times.
+
+So SPU execution, DMA, atomics and both event flags all work.
+
+### What is actually stuck
+
+The PPU's blocking wait polls `[job+0x00] + [job+0x1C] == 0` on a job block at
+`0x13598CC0` (`PS3_WAIT_OBJ` dumps it). **`[job+0x00]` is pinned at 1** — one
+job in flight, forever.
+
+Nothing ever clears it. `PPU_WWATCH` on that block catches exactly four writes
+in a whole run, all zeroes from `func_000205A4`, and that turns out to be the
+queue **allocator** running in an init loop (`func_003F95C8` fills an array with
+its return values), not a completion path. `SPU_WATCHEA` on the same block
+shows the SPU never touches it either — every SPU EA in the run lies in
+`0x107B7xxx`, `0x14BExxxx` or `0x58000000+`, and the job block is in a
+different heap region entirely.
+
+So the decompression job is submitted and counted, the SPU is busy servicing
+the *frame* queue at `0x14BEA810`, and no side ever retires the decompression
+job. That is the next thread: find what `func_0001DBB8` (the enqueue inside
+`func_0001FFB8`) writes, and whether any SPU task is ever pointed at it.
 
 How the stall was found, since three earlier guesses were wrong: `PS3_POLLTOP`
 (added upstream for this) histograms `sys_timer_usleep` callers **by thread**.
