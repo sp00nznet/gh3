@@ -30,24 +30,59 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — see below |
+| Frontend | **not reached** — blocked on SPU decompression, see below |
 
-## Where it stops
+## Where it stops: a SPU decompression job that never completes
 
-The boot assets all load and the 2D layer renders. The title sits on its
-loading screen forever: **14 file opens at 120s and still 14 at 300s**, with
-the loading record spinning the whole time. Nothing is blocked — no syscall
-blocks for 150ms, no `sys_event_queue_receive` blocks at all; six threads
-poll on `sys_timer_usleep` because that is how the engine is built
-(`PS3_POLLTOP` upstream names the sites: frame limiter, async-FS pump, flip
-wait). The async-FS pump is idle in the steady state, so the game is not
-waiting on a load — **it never queues the next one**.
+Every asset on this disc lives under `DATA/COMPRESSED/`, and `func_004BF614`
+is the engine's decompressor. Its own format strings name its three paths:
 
-So the remaining work is the boot state machine / QB script VM, not graphics.
+```
+'Decompress Data (%p | %p) using Job (SPU)'            async
+'Decompress Data (%p | %p) using Blocking Job (SPU)'   <-- the main thread sits here
+'Decompress Data (%p | %p) Blocking Direct (PPU)'      fallback
+```
 
-Assets it loads: `COMPRESS.TOC`, `ENGINE_PARAMS.QB`, `QB.PAK`+`QB.PAB`, the
-material library, `BOOT_LEGAL.IMG`+`.IMV`, `LOAD_WHEEL.IMG`+`.IMV`, animation
-data, `CUTSCENE_INFOS.PAK`, `GLOBAL_AD_TEX.PAK`+`_VRAM`.
+The main thread submits a blocking SPU decompression job and waits for it
+**187,251 times per minute** and forever. Nothing else can proceed, so the
+loader never queues the 15th file and the loading record spins.
+
+Proof, not inference: `func_0001A134()` selects between the blocking-SPU and
+direct-PPU paths, and it is a one-line getter reading a global. Pinning that
+global to 0 with `PPU_FORCE_READ_ADDR=102001A4 PPU_FORCE_READ_VAL=0` sends the
+engine down its own PPU path, and the boot **advances a whole stage**: 14 -> 17
+files, loading `ZONES/GLOBAL.PAK` + `.PAB` + `_VRAM.PAK` — 24 MB of zone data,
+every read complete and matching the disc byte for byte.
+
+That is a diagnostic, **not a workaround**: four other functions read the same
+global, and with it pinned the run takes 12.7 million NULL dereferences
+(`[null-read] ... by guest-fn=0x001C3A74`, 1 without it). It proves what the
+blocker is; it does not fix it.
+
+### Why the SPU side does nothing
+
+GH3 runs two SPURS tasksets. Both dispatch and both run — and task 0 wakes on
+every signal and **runs 0 ms**, thousands of times:
+
+```
+[spu_workload] signal task 0 (taskset ...)
+[spu_workload] WAIT_SIGNAL#9500 enter task=0 taskset=... ran=0ms
+[spu] SPURS taskset syscall num=2 ... image=4
+```
+
+Five SPU images are lifted and registered. Only **images 4 and 5 ever dispatch**
+— the two taskset contexts. Images 1-3, which are the task bodies, never run at
+all. So what executes is the taskset shell cycling WAIT_SIGNAL, never the task's
+own ELF, and the decompressor inside it is never reached. That is the same SPU
+middleware gap that has Virtua Fighter 5, Tokyo Jungle and YDKJ stuck, and it is
+the next thread to pull.
+
+How the stall was found, since three earlier guesses were wrong: `PS3_POLLTOP`
+(added upstream for this) histograms `sys_timer_usleep` callers **by thread**.
+Without the thread id the async-FS thread's idle wait looked like the stall, and
+pinning the flag it waits on changed nothing. With it, tid=4/3/5/9 are the
+renderer, async FS, Bink and FMOD idling by design, and tid=1 is parked on one
+site — `func_004BF614+0x2DC`, the decompression wait.
 
 ### The black screen was an unimplemented RSX method
 
