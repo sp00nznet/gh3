@@ -30,17 +30,17 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — a garbage element count asks for 164 MB, then memsets the null over the TOC; see below |
+| Frontend | **not reached** — a garbage count asks for 164 MB during init, then memsets the null over the TOC; see below |
 
-## Where it stops: one failed allocation, then a memset over the TOC
+## Where it stops: a memset over the TOC, during startup init
 
 The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
 destroys.
 
-`func_006479BC` asks its heap for `count << 3` bytes with a count of
-0x01490752 -- 164 MB -- gets 0 back, and memsets the null buffer without
-checking. The sweep runs UP from address 0. On real
+The engine asks for `count << 3` bytes with a count of 0x01490752 -- 164 MB --
+gets 0 back, and memsets the null buffer without checking. The sweep runs UP
+from address 0. On real
 hardware the first store faults; here the whole 32-bit guest space is backed, so
 it runs silently through the unused copy of the code image and then straight
 through this title's data segment at `0x009D0000` -- which holds `.data`, `.opd`
@@ -81,11 +81,31 @@ from `sys_initialize_tls` -- not `PPU_TLS_TP` (`0x10F07000`). Four write watches
 aimed at the wrong block all read as "nothing ever writes this", which is how
 the allocator stack got blamed. `[GSTACK]` now prints `r13` and `tid`.
 
+### Where it is called from
+
+A back-chain walk (`[GSTACK] chain:`, ELFv1: back chain at `[sp]`, lr at
+`back_chain+0x10`) gives the real callers, ending at the CRT entry:
+
+```
+memset <- func_0023EE10+0x8C <- func_0005AC94+0x64 <- func_0005BFC0+0xD0 (x2)
+       <- func_00064288+0xC0 <- func_00069DFC+0xAE8 <- func_0006AC90+0x1D0
+       <- func_0006B654+0x3A8 <- func_002898C4+0x3DC <- func_002877CC+0xD0
+       <- func_0028BB14+0x18C <- func_00526AB4+0x4F8 <- func_00113BB4+0x100 (x4)
+       <- func_005229A4+0xD80 <- func_00010250+0x154 <- func_00010244+0x8
+```
+
+**This is startup init, not decompression.** `func_005229A4` is the same init
+function that calls the memory-pool setup. Earlier notes here blamed
+`func_004BF614` (the decompressor) -- that came from the stack SCAN, which
+reports any stack word that looks like a return address including dead slots
+from frames that already returned. The scan named `func_0041DB10`,
+`func_003F8EA0` and `func_004BF614`; none of them are in the real chain. Trust
+`chain:`, not `sp=...:`.
+
 ### The open question: a count that is really the TOC
 
-The allocation does not fail spuriously -- it is refused honestly, because the
-request is enormous. `func_006479BC(descriptor, count)` takes the element count
-in r4, and at the failure it is `r31 = 0x01490752`:
+The allocation is refused honestly -- the request is enormous. At the failure
+the live count register is `r31 = 0x01490752`:
 
 ```
 r31        = 0x01490752
@@ -95,24 +115,23 @@ TOC        = 0x00A483A8
 r31 == (TOC + 1) * 2      exactly
 ```
 
-That is not a plausible count; it is the TOC pointer with arithmetic on it. The
-same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]` reports, so
-the one bad word propagates. r31 is `func_006479BC`'s *second argument*, so the
-garbage is computed by its caller -- that caller is the next thing to find.
+That is not a plausible element count; it is the TOC pointer with arithmetic on
+it. The same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]`
+reports, so one bad word explains both. Finding which load produces `TOC+1`
+where a count belongs is the next step.
 
-A TOC-valued word turning up where a count belongs is the signature to chase:
-the lifter rewrites `ld r2,N(r1)` after an indirect call into a hardcoded
-`ctx->gpr[2] = 0x00A483A8` (`TOCFIX`), so a misidentified `ld rX,N(r1)` would
-put the TOC in the wrong register. Worth ruling in or out first.
+Worth ruling in or out first: the lifter rewrites `ld r2,N(r1)` after an
+indirect call into a hardcoded `ctx->gpr[2] = 0x00A483A8` (`TOCFIX`), so
+anything that mis-handles a TOC restore puts a TOC value somewhere it does not
+belong.
 
 ### Heap selection works; the null heap is a red herring
 
-`func_006479BC` picks a heap by comparing r13 against a table of registered
-thread pointers at `[[TOC+0x3734] - 0x8000]`, falling back to a default slot.
-Measured: tid=1, 7 and 8 each register and get heaps A/B/C
-(`0x107BC2E0/E4/E8` <- `0x110BDAF0`, `0xD00B5C90`, `0xD00F6BE0`), all long
-before the failure and never zeroed. The DEFAULT slot `0x107BC2EC` is never
-written -- by design, not a bug. The main thread matches heap A and gets it.
+Heaps are picked by matching r13 against a table of registered thread pointers
+at `[[TOC+0x3734] - 0x8000]`. Measured: tids 1, 7 and 8 each register and get
+heaps A/B/C (`0x107BC2E0/E4/E8` <- `0x110BDAF0`, `0xD00B5C90`, `0xD00F6BE0`),
+long before the failure and never zeroed. The DEFAULT slot `0x107BC2EC` is never
+written -- by design.
 
 ## Building
 
