@@ -159,17 +159,21 @@ sits at `lr=0x00649B08`, a loop in `func_006499D0` calling `func_00649880`.
 
 Requires `SPURS_FORCE_SPUS=1` -- four lanes livelock on the jobIndex atomic.
 
-**The wall moved -- new frontier.** The main thread is pinned in an allocator
-retry: `WATCHDOG_AT` gives identical `lr=0x00649B08 r3=0x00300001
-sp=0x0FEFA460` at 60s and 170s, a busy loop with no syscalls and no HLE.
-`func_006499D0` is an allocator (size tests against 0x2000 / 0x200, vtable
-fallback) and `loc_00649AF8` retries `func_00649880` forever. Nothing reports
-a failure -- `sys_memory` allocations succeed -- so it is retrying silently.
+**The wall moved -- new frontier.** The main thread is in `func_00649880`,
+specifically its loop at `loc_006498FC`: pop up to 4 nodes off a free list,
+call a vtable entry, repeat while `r27 < r29`. `func_006499D0` (its caller) is
+a free-list push and returns normally, so the loop is inside `func_00649880`.
 
-Check first: `func_00261F54` walks a table whose base `[[TOC-0x3F28]]` is NULL
-(`[null-read] NULL+0x0/+4/+8/+0xC`), plausibly the same allocator's free list.
-Our flat VM returns zero for address 0, so that degrades into a silent hang
-rather than a crash.
+`WATCHDOG_AT` reports an identical `lr=0x00649B08 r3=0x00300001
+sp=0x0FEFA460` at 60s and 170s -- but **that does not prove it is stuck**: the
+loop calls out through `ps3_indirect_call` every pass, and a lifted indirect
+call does not write `lr` (noted upstream in `0675f1b`). Whether the loop is
+retrying or grinding forward is NOT established. `sys_memory` reports no
+allocation failures.
+
+Worth checking alongside it: `func_00261F54` walks a table whose base
+`[[TOC-0x3F28]]` (guest `0x104306E4`) is NULL and which **nothing in the run
+ever writes** -- plausibly this allocator's free list.
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
