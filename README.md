@@ -18,7 +18,7 @@ Rock Band 3 runs Sony's MultiStream (`cellMS*`) audio middleware on the SPUs —
 104 markers — and in a rhythm game the audio path *is* the critical path. That
 is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
-## Status: renders its loading screen; stops before the frontend
+## Status: renders its loading screen; stops in the decompression wait
 
 | Step | State |
 |---|---|
@@ -30,7 +30,7 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — a vtable used as an object; slot 6 becomes a hash table, the rehash asks 164 MB, fails, memsets 82 MB over the image |
+| Frontend | **not reached** — with `PS3_NULL_SWEEP=1` the guest is healthy and the blocker is the decompression wait; without it a bad container pointer memsets 82 MB over the image |
 
 ## Where it stops: a vtable used as an object, during startup init
 
@@ -68,6 +68,37 @@ found:
 page (`[null-write]`, `PS3_NULL_WRITE=0` to disable), so this class of failure
 announces itself instead of presenting as five unrelated bugs in five
 subsystems.
+
+### `PS3_NULL_SWEEP=1` -- what the corruption was hiding
+
+The memset over the image is containable. On real hardware the first store
+through the null pointer faults and the memset never continues; the runtime now
+has an opt-in guard that drops the rest of the sweep once a null-page store is
+seen. Same 140 s run, with and without:
+
+| | without | with |
+|---|---|---|
+| `.opd` descriptor read as zero | 6204 | **0** |
+| guest reads through NULL | ~20,000,000 | **16** |
+| calls through a NULL pointer | 10 | **0** |
+| `bctr` to address 0 | many | **0** |
+| frames presented | 2304 | **8544** |
+
+So that single memset caused every other symptom, and with it contained the
+guest runs clean and 3.7x faster (those 20 M null reads were pure CPU burn).
+
+It does **not** reach the frontend. The title loads the same 17 files -- through
+`GLOBAL.PAB` and a 24 MB read of `GLOBAL_VRAM.PAK` -- renders the legal screen
+and loading wheel, and parks the main thread at `lr = 0x004BF8F0`, inside
+`func_004BF614`'s poll loop (`goto loc_004BF800`). That is the decompression
+wait: the blocker is now the original one, reached with a healthy guest instead
+of a shredded image.
+
+Worth chasing from here: three imports are unresolved, one of them called 38
+times -- `0xDF6476BD` (cellGcmSys), `0x32B94ADD` (cellSpurs) and
+`0x6C960F6D` (`cellSpursGetSpuThreadId`). All three SPU images resolve and
+dispatch (`fp=0x21F48A8621295E5A` image 6 included), and SPU tasks do signal,
+so the job system is alive -- what the poll loop is waiting for is the question.
 
 ### What is NOT wrong (measured, so it does not get re-derived)
 
