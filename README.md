@@ -30,9 +30,9 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — a garbage count asks for 164 MB during init, then memsets the null over the TOC; see below |
+| Frontend | **not reached** — an OPD address is used as a hash table during init; the rehash asks for 164 MB, fails, and memsets 82 MB over the image |
 
-## Where it stops: a memset over the TOC, during startup init
+## Where it stops: an OPD used as a hash table, during startup init
 
 The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
@@ -111,41 +111,38 @@ Note the walk prints RETURN addresses, so it never names the innermost frame --
 the function that actually made the failing call is the one missing from the
 top of that list.
 
-### The open question: a hash table whose capacity field is the TOC
+### Root cause: an OPD is being used as a hash table
 
 `func_00647BEC` is an open-addressing hash-table insert -- it uses 0x9E3779B1,
-the golden-ratio hash constant. Its grow path is:
+the golden-ratio hash constant. Its grow path is `newcap = capacity*2 + 2`,
+and it is handed a table pointer of `0x00A331AC`. That address is inside
+`.opd`: it is the TOC field of the function descriptor at `0x00A331A8`, i.e.
+**opd + 4**.
+
+Read as a hash table, a run of function descriptors gives:
 
 ```
-loc_00647CF8:   r4 = capacity * 2 + 2 ;  func_006479BC(table, r4)   // rehash
+r28 (table)  = 0x00A331AC     -> OPD 0x00A331A8 = {code=0x0074DACC, toc=0x00A483A8}
+[table+4]    = 0x0074DAE8     the NEXT descriptor's code address, read as the load
+[table+8]    = 0x00A483A8     the NEXT descriptor's TOC, read as the capacity
+capacity*2+2 = 0x01490752     the rehash count            -> 164 MB, refused
+count << 2   = 0x05241D48     the memset length, measured ->  82 MB, over NULL
 ```
 
-and the arithmetic closes exactly:
+Every number checks against the raw ELF bytes. The other caller,
+`func_00647BA0`, rounds its request to a power of two and 0x01490752 is not
+one, so the failing call is definitely this grow path.
 
-```
-[table + 8]  (capacity) = 0x00A483A8   == the TOC, exactly
-capacity * 2 + 2        = 0x01490752   == the observed count, exactly
-count << 2              = 0x05241D48   == the measured memset length
-```
+**So the entire boot failure is one bad pointer**: something hands the
+container code a function descriptor address plus four where an object pointer
+belongs. Find who produces `0x00A331AC`. `func_006479BC` is never an
+indirect-call target -- `PS3_CALLTRACE` cannot see it -- and its only direct
+callers are `func_00647BA0` and `func_00647BEC`, so work up from there.
 
-The other caller, `func_00647BA0`, rounds its request to a power of two and
-0x01490752 is not one, so the failing call is definitely this grow path.
-
-**So the whole failure is one field: a hash table's capacity is the TOC
-pointer.** It asks to rehash into 0x01490752 buckets, the heap refuses the
-164 MB, and the null result is memset for 82 MB.
-
-Not yet settled: how the TOC gets into that field. Two candidates worth one
-measurement each --
-
-1. The table is a stack local used before initialisation. `func_0023EE10`
-   builds one at `r1 + 0x94` and passes it down, and a stale
-   `std r2, 0x28(r1)` TOC-save at the right depth would land exactly there.
-2. The table pointer is wrong and lands in `.opd`, where every second word is
-   the TOC.
-
-They are trivially distinguishable by the pointer value: a stack local is
-`0x0FEFAxxx`, `.opd` is `0x00A2xxxx`. Capture `r3` at `func_006479BC` entry.
+Worth checking early: whether a runtime path hands guest code an OPD address in
+r3 that then gets stored as an object. The log carries
+`guest_call: OPD 0x00A24868 -> code 0x00000000 not registered`, so OPD
+addresses do reach guest registers.
 
 ### Heap selection works; the null heap is a red herring
 
