@@ -131,27 +131,30 @@ repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
 `WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
 jobmanager runs one SPU at a time) and far more stable.
 
-**Not solved: the SPU consumer stalls partway through its work list.**
+**Not solved.** What is measured, and only that:
 
-The SPU claims the job (`[job+0x1C]`) and polls `0x101FF100` ~96M times with
-every atomic SUCCEEDING. Read the writers before reading the values, because
-the obvious interpretation is wrong:
+* The SPU claims the job (`[job+0x1C]` -> 1) and never releases it.
+* It polls `0x101FF100` ~96M times, every atomic SUCCEEDING (single-lane).
+* The PPU publishes three fields on that line and nothing else touches them:
 
 ```
-[ww] 0x101FF118 <- 0x13598A00   list base      by func_0002005C (PPU)
-[ww] 0x101FF11C <- 0x3E  (62)   item count     by func_0002005C (PPU)
-[ww] 0x101FF120 <- 0x0          consumer index by func_0002005C (PPU)
+[ww] 0x101FF118 <- 0x13598A00   by func_0002005C
+[ww] 0x101FF11C <- 0x3E  (62)   by func_0002005C
+[ww] 0x101FF120 <- 0x0          by func_0002005C
 ```
 
-The PPU publishes 62 items and a consumer index of **zero**; the SPU then
-advances that index to **46** and stops. So this is not a full ring waiting on
-a PPU drain -- the SPU IS the consumer, it processes 46 of 62 items, and it
-stalls on the 47th. Nine and a half minutes single-lane does not move it, so
-it is not the interpreter being slow either.
+* `0x101FF120` later reads **46**, advanced by the SPU through its lock-line
+  atomics (it is not in the SPU's DMA trace, which does not cover PUTLLC).
+* The SPU's DMA in that state touches `0x13564980`, `0x13564A60`,
+  `0x13598CC4` (job+4) and `0x135991D0` -- **never** the region `0x13598A00`
+  points at.
+* 9.5 minutes single-lane does not move any of it.
 
-(An earlier version of this file called it a full ring nobody drains. That was
-wrong: it read `+0x20` as a producer-written tail without checking who wrote
-it. The PPU wrote 0.)
+**What those fields mean is NOT established.** Two earlier readings of them
+are recorded below as wrong, and the third -- "a 62-item work list the SPU
+consumes to item 46" -- does not survive the DMA trace either, because the SPU
+never reads that list. Do not build on any of them; start by finding what
+writes `0x101FF120` on the SPU side and what it is counting.
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
