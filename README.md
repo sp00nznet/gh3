@@ -18,7 +18,7 @@ Rock Band 3 runs Sony's MultiStream (`cellMS*`) audio middleware on the SPUs —
 104 markers — and in a rhythm game the audio path *is* the critical path. That
 is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
-## Status: boots, opens a window, stops before loading its assets
+## Status: renders its loading screen; stops before the frontend
 
 | Step | State |
 |---|---|
@@ -27,55 +27,76 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Function discovery | **done** — 28,162 found, 27,137 `.opd` descriptors as ground truth |
 | PPU lift | **done** — 28,987 functions, 6 chunks, 193 MB of C++, 6 continuation warnings |
 | Build & link | **done** — first attempt, 13/13, **nothing title-specific in the tree** |
-| Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, 22–57 fps |
-| Assets | **not loaded** — see below |
+| Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
+| Assets | **loaded** — 14 files, every read complete, zero failures |
+| Render | **draws** — the animated loading record is on screen |
+| Frontend | **not reached** — see below |
 
 ## Where it stops
 
-Everything is running — PPU, SPU and RSX — and every frame is still black.
+The boot assets all load and the 2D layer renders. The title sits on its
+loading screen forever: **14 file opens at 120s and still 14 at 300s**, with
+the loading record spinning the whole time. Nothing is blocked — no syscall
+blocks for 150ms, no `sys_event_queue_receive` blocks at all; six threads
+poll on `sys_timer_usleep` because that is how the engine is built
+(`PS3_POLLTOP` upstream names the sites: frame limiter, async-FS pump, flip
+wait). The async-FS pump is idle in the steady state, so the game is not
+waiting on a load — **it never queues the next one**.
 
-| | |
-|---|---|
-| Files opened | **14, zero failures** |
-| SPU | **both images dispatch by fingerprint and run** (`image=4`, `image=5`) |
-| Draw groups | **3,226 executed, 0 dropped**, 3,069 `draw_arrays` in the FIFO |
-| Guest clears | 6,455 |
-| Textures created | **0** |
+So the remaining work is the boot state machine / QB script VM, not graphics.
 
 Assets it loads: `COMPRESS.TOC`, `ENGINE_PARAMS.QB`, `QB.PAK`+`QB.PAB`, the
 material library, `BOOT_LEGAL.IMG`+`.IMV`, `LOAD_WHEEL.IMG`+`.IMV`, animation
 data, `CUTSCENE_INFOS.PAK`, `GLOBAL_AD_TEX.PAK`+`_VRAM`.
 
-### The frontier: a sampled surface nothing draws into
+### The black screen was an unimplemented RSX method
 
-Not one real texture is ever created — `binds[white=0 real=0 surf=3226]`, every
-single bind resolves to a render surface. The obvious conclusion is that the
-alias test is too loose, and it is wrong. With the alias **hit** reported
-(added upstream for this):
+Every frame was black, and every symptom pointed at the render target:
 
 ```
-[alias-hit] tex 0:0x00200000 fmt=0xA5 1040x592 -> surface[1] 0:0x00200000 1040x592
-```
-
-Same location, same offset, same dimensions — a deliberate render-to-texture
-pass. The bind is correct. `LD_SURF_DUMP` then says what is actually wrong:
-
-```
-[surf-dump] slot=0 0:0x00000000 1280x720 nonblack=0 draw_gen=0    clear_gen=0
 [surf-dump] slot=1 0:0x00200000 1040x592 nonblack=0 draw_gen=0    clear_gen=3794
-[surf-dump] slot=2 0:0x00510000 1280x720 nonblack=0 draw_gen=3796 clear_gen=3795
-[surf-dump] slot=3 0:0x00894000 1280x720 nonblack=0 draw_gen=3793 clear_gen=3792
 ```
 
-**Slot 1 — the surface every draw samples — is cleared 3,794 times and has
-`draw_gen=0`: nothing ever renders into it.** Slots 2 and 3 *are* drawn into,
-but they sample slot 1, so they render black, and the screen stays black.
+The surface every draw samples — through a *legitimate* render-to-texture
+alias, `[alias-hit] tex 0:0x00200000 -> surface[1]`, same location, offset and
+dimensions — was cleared 3,794 times and never drawn into. Zero textures were
+ever created: `binds[white=0 real=0 surf=3226]`. Ruled out along the way: not a
+2D/NV3089 blit (no 2D traffic), not a dropped command (0 drops), not the SPU
+(both images dispatch and run), not an SPU-built pushbuffer (the FIFO walker is
+caught up every drain, `getoff == put`).
 
-So the question is narrow: what should be filling surface 1 (1040x592 at
-0x200000), and why does that pass never issue a draw. Ruled out already — it is
-not a 2D/NV3089 blit (no 2D engine traffic at all), not a dropped command (0
-dropped groups, and the unknown methods are one-off state), and not the SPU
-(both tasks dispatch and run).
+The answer was in the method stream. A histogram of 120,000 steady-state RSX
+methods put **`0x1818` on top with 9,388 occurrences**, alongside 503
+`BEGIN_END(prim=8)` pairs and only 168 `DRAW_ARRAYS`. `0x1818` is
+`NV4097_INLINE_ARRAY` — vertices pushed through the FIFO instead of fetched
+from a vertex array — **and nothing in ps3recomp consumed it**. Every draw in
+GH3's 2D layer arrived carrying no vertices and was counted as an empty group.
+
+The layout is derivable because the hardware packs the *enabled* attributes in
+ascending register order at the declared stride; GH3's decodes as attr0 F32[4]
++ attr3 UB[4] + attr8 F32[2] = 28 bytes, exactly its VTXFMT stride, and reads
+out as screen-space quads with white vertex colour and 0..1 UVs.
+
+Fixed upstream (`750bb09`). Measured here:
+
+| | before | after |
+|---|---|---|
+| Groups executed | 4,548 | **14,669** |
+| Empty groups | 9,091 | **0** |
+| Real texture binds | 0 | **4,887** |
+| Scene surface | `draw_gen=0 nonblack=0` | `draw_gen=5297` **`nonblack=1601`** |
+
+Two things were needed to get there, and the first alone was not enough: the
+dispatcher had to deliver the stream, *and* the shared vertex fetch plan had to
+read from it. Wiring only the live engine's legacy mode left the default
+(compact) mode reading whatever the last ordinary draw had left in the array
+offsets — the draws executed and still put nothing on screen.
+
+The one texture GH3 binds is a 128x128 DXT5 whose colour endpoints are all
+zero and whose alpha block is real: a black overlay with an alpha mask. It
+renders black *correctly*. `LD_TEXSRC_DBG` (added upstream for this) is what
+settled that, by reporting source bytes for compressed formats the decoded-RGBA
+dump never reached.
 
 ### The hang that was here, and what it actually was
 
