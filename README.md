@@ -38,9 +38,14 @@ The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
 destroys.
 
-The engine asks for `count << 3` bytes with a count of 0x01490752 -- 164 MB --
-gets 0 back, and memsets the null buffer without checking. The sweep runs UP
-from address 0. On real
+The engine's array allocator gets 0 back from the heap and memsets the null
+buffer without checking. The arguments, read off the failing call:
+
+```
+memset(dst = 0x00000000, c = 0, len = 0x05241D48)    82 MB, over a null pointer
+```
+
+The sweep runs UP from address 0. On real
 hardware the first store faults; here the whole 32-bit guest space is backed, so
 it runs silently through the unused copy of the code image and then straight
 through this title's data segment at `0x009D0000` -- which holds `.data`, `.opd`
@@ -102,28 +107,40 @@ from frames that already returned. The scan named `func_0041DB10`,
 `func_003F8EA0` and `func_004BF614`; none of them are in the real chain. Trust
 `chain:`, not `sp=...:`.
 
+Note the walk prints RETURN addresses, so it never names the innermost frame --
+the function that actually made the failing call is the one missing from the
+top of that list.
+
 ### The open question: a count that is really the TOC
 
-The allocation is refused honestly -- the request is enormous. At the failure
-the live count register is `r31 = 0x01490752`:
+The allocation is refused honestly -- the request is enormous, because the
+element count is nonsense. `r31` is callee-saved and holds exactly `len >> 2`
+at the failure, so it is the count:
 
 ```
-r31        = 0x01490752
-r31 << 3   = 0x0A483A90   the allocation size   -> 164 MB, refused
-r31 << 2   = 0x05241D48   the memset length     ->  82 MB, over a null pointer
+r31        = 0x01490752   the element count
+r31 << 2   = 0x05241D48   the memset length, measured    ->  82 MB
 TOC        = 0x00A483A8
 r31 == (TOC + 1) * 2      exactly
 ```
 
-That is not a plausible element count; it is the TOC pointer with arithmetic on
-it. The same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]`
-reports, so one bad word explains both. Finding which load produces `TOC+1`
-where a count belongs is the next step.
+That is not a plausible count; it is the TOC pointer with arithmetic on it. The
+same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]` reports, so
+one bad word explains both. Finding the load that produces `TOC+1` where a
+count belongs is the next step.
 
 Worth ruling in or out first: the lifter rewrites `ld r2,N(r1)` after an
 indirect call into a hardcoded `ctx->gpr[2] = 0x00A483A8` (`TOCFIX`), so
-anything that mis-handles a TOC restore puts a TOC value somewhere it does not
+anything mishandling a TOC restore puts a TOC value somewhere it does not
 belong.
+
+Which of the allocator entry points holds the count is not pinned yet.
+`r30 = 0x009F4538` is `[TOC+0x3734]`, loaded by an 18-function family at
+`0x006477F4..0x00648xxx` that all do the r13-keyed heap selection, so it says
+"inside that family" and no more. `[sp+0x10] = 0x00647A50` points at
+`func_006479BC` specifically, but its caller `func_00661EF8` passes
+`r4 = 0x10040DC8`, not the count -- so that is not settled either. One more
+measurement.
 
 ### Heap selection works; the null heap is a red herring
 
