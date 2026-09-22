@@ -110,17 +110,51 @@ So the decompression work happens and nothing ever retires the job.
 
 ### The data is good — only the signal is missing
 
-Forcing just that one word to 0 (`PPU_FORCE_READ_ADDR=13598CC0
-PPU_FORCE_READ_VAL=0`) advances the boot **cleanly**: 14 -> 16 files, into
-`ZONES/GLOBAL.PAK` + `.PAB`, with **1** NULL dereference in the run. (The
-earlier, cruder force of the SPU/PPU path selector advanced further but cost
-12.7 million of them — that one broke an invariant; this one does not.) A clean
-advance means the decompressed data the game goes on to use is valid, i.e. the
-SPU really did the work and only the completion signal is absent.
+Standing in for the completion nothing ever writes walks the boot chain:
 
-It then re-blocks, because each job takes its own table entry and the force
-pins one address. The screen is unchanged throughout — still the loading
-record — so this buys load progress, not a frontend.
+| | files loaded |
+|---|---|
+| baseline | 14 |
+| `PPU_POKE_ADDR=13598CC0 PPU_POKE_VAL=0 PPU_POKE_MS=5` | **18** |
+
+It gets through `ZONES/GLOBAL.PAK` + `.PAB` + the 24 MB `GLOBAL_VRAM.PAK`
+and on into `PERM_ANIMS.PAK`. So the decompressed data is good and the engine
+is happy to continue — the only thing missing is the signal.
+
+**The screen never changes.** 34,200 frames over nine and a half minutes, 38
+captures: the loading record and nothing else, same bounding box throughout.
+The run also settles at 17-18 files rather than climbing, which is what a racy
+stand-in should do — poking a shared counter can zero it between submit and
+wait, so later jobs are retired before they finish.
+
+`PPU_POKE_*` writes the word rather than faking its reads, and that distinction
+is load-bearing. `PPU_FORCE_READ_ADDR` on the same address fakes the `lwarx`
+that loads a store-conditional's expected value, so the CAS compares against a
+value memory does not hold and retries forever — `PPU_CAS_FAIL=1` measured 1.4
+million failed store-conditionals on that one address, every one of them caused
+by the probe itself. Writing keeps `lwarx`, the CAS and the polling reader
+consistent.
+
+### How the main thread was finally located
+
+It had gone dark to every probe at once — no usleep, no blocking syscall, no
+HLE, and a sampler that cannot resolve lifted code (no `.pdata`, and identical
+code folding makes a name ambiguous: GH3 profiled as 9% in `func_009927A4`,
+whose whole body is `return;`).
+
+`ctx->lr` needed none of that. The lifter writes it before every call, it is
+already a guest address, and every thread's context is registered for the
+reservation set — so the answer was in an array nobody read (added upstream,
+`7784332`):
+
+```
+guest-tid 1   lr=0x00020008   <- INSIDE the job enqueue, not waiting after it
+guest-tid 3   lr=0x004D0608   <- async FS idle wait
+guest-tid 9   lr=0x005D3058   <- SPURS frame sync
+```
+
+An unchanged `lr` also proves the thread has made no call since entering, which
+narrows a 320-line function to its call-free loops in one reading.
 
 How the stall was found, since three earlier guesses were wrong: `PS3_POLLTOP`
 (added upstream for this) histograms `sys_timer_usleep` callers **by thread**.
