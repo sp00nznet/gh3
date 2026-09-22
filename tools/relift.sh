@@ -24,13 +24,22 @@ python "$PS3RECOMP/tools/ppu_lifter.py" game/EBOOT.elf \
 python "$PS3RECOMP/tools/gen_hle_nids.py" --all --out src/gen/ppu_hle_nids.cpp
 
 # ---- SPU -------------------------------------------------------------------
-# Unlike Simpsons (whose SPURS job binaries are raw blobs built in main memory
-# and have to be captured at dispatch with SPU_DUMP_MISS), GH3's five SPU images
-# are ordinary embedded ELFs in the EBOOT, so extract_spu_images.py finds them
-# and no capture run is needed. The title creates them as SPURS *tasks*
-# (cellSpursCreateTask, entries 0x101A3380 / 0x101C7280), which is a different
-# path from the job-chain dispatch SPU_DUMP_MISS hooks -- so that env would
-# never have produced anything here.
+# GH3 has SIX SPU images and they come from two different places.
+#
+# Five are ordinary embedded ELFs in the EBOOT, which extract_spu_images.py
+# finds; the title creates two of them as SPURS *tasks* (cellSpursCreateTask,
+# entries 0x101A3380 / 0x101C7280).
+#
+# The sixth is the job library's SPURS WORKLOAD policy module -- a RAW blob the
+# title builds in main memory (cellSpursAddWorkload pm=0x1010B200, 6720 bytes),
+# so the extractor cannot see it and the only place its bytes exist is the
+# moment cellSpurs hands it over. Capture it from a run:
+#
+#   SPU_DUMP_MISS=spu_miss ./build/gh3 vfs/PS3_GAME/USRDIR/EBOOT.elf
+#
+# and re-lift below. Without it the workload dispatch MISSes and the job
+# library's SPU side never runs at all, which is what left every decompression
+# job submitted, counted and never retired.
 python "$PS3RECOMP/tools/extract_spu_images.py" game/EBOOT.elf --out analysis/spu
 
 rm -rf src/spu_gen && mkdir -p src/spu_gen
@@ -38,3 +47,17 @@ python "$PS3RECOMP/tools/build_spu_workloads.py" \
     --images analysis/spu --lifted src/spu_gen \
     --out src/spu_gen/spu_workloads.c \
     --register-fn gh3_spu_register_all --constructor --title gh3
+
+# ---- the job library's workload policy module (raw capture) ----------------
+# Lifted at base 0: a workload PM is loaded at LS 0 and entered at its first
+# instruction, so the lifted addresses equal the link-time ones.
+JOBPM=spu_miss/spujob_21F48A8621295E5A_6720.bin
+if [ -f "$JOBPM" ]; then
+    python "$PS3RECOMP/tools/find_spu_functions.py" "$JOBPM" --raw --base 0         --out spu_miss/jobpm_funcs.json
+    rm -rf src/spu_gen/jobpm && mkdir -p src/spu_gen/jobpm
+    python "$PS3RECOMP/tools/spu_lifter.py" "$JOBPM" --base 0         --functions spu_miss/jobpm_funcs.json         --symbol-prefix jobpm_ -o src/spu_gen/jobpm
+    echo "NOTE: re-add the jobpm block to src/spu_gen/spu_workloads.c --"
+    echo "      build_spu_workloads.py globs *.elf and cannot see a raw blob."
+else
+    echo "missing $JOBPM -- capture it with SPU_DUMP_MISS first"
+fi
