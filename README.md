@@ -83,57 +83,47 @@ Set/Wait pair in `func_005D2E9C` cycles **16,408** times.
 
 So SPU execution, DMA, atomics and both event flags all work.
 
-### What is actually stuck
+### What was actually stuck: cellSpursWakeUp was a stub
 
-The PPU's blocking wait polls `[job+0x00] + [job+0x1C] == 0` on a job-table
-entry at `0x13598CC0` (`PS3_WAIT_OBJ=004BF8F0` dumps it; entries are 32 bytes
-at `[[TOC-0x7E84]+0x118] + id*32`). **`[job+0x00]` is pinned at 1.**
-
-Establishing that took fixing the probe first. `PPU_WWATCH` hooks `vm_write*`,
-and a lifted `stwcx.` does not go through it — it calls `ppu_stwcx32`, a host
-compare-exchange straight on guest memory. So **every atomically-maintained
-field in every port was invisible to the tree's main memory probe**, and
-watching this one reported "nothing ever writes it". Fixed upstream
-(`cd6fa6f`); the same run then shows the increment immediately:
+The job library is a SPURS **workload**, not a taskset task:
 
 ```
-[ww] 0x13598CC0 <- 0x1 (w4) guest-fn=0x0001DBB8      the enqueue, atomically
+cellSpursAddWorkload(pm=0x1010B200, 6720)   register the policy module
+cellSpursSetExceptionEventHandler(...)
+<unresolved NID 0x32B94ADD>(spurs, 1)
+cellSpursReadyCountStore(wid=0, 8)
+cellSpursWakeUp(spurs)                      <-- was `return CELL_OK;`
 ```
 
-That is the **only** write. `PPU_RWATCH` finds exactly two functions that ever
-touch the word — the enqueue and the waiter — and the SPU never addresses that
-memory region at all (`SPU_WATCHEA`; every SPU EA is in `0x107B7xxx`,
-`0x14BExxxx` or `0x58000000+`). Nor is completion delivered as an event:
-`sys_event_queue_receive` (syscall 130) is called **zero** times in a whole run.
+`AddWorkload` only registers; `WakeUp` is what puts the module on an SPU, and
+it was a stub. So **no SPURS workload's SPU code had ever run in any port** --
+tasks worked, because `cellSpursCreateTask` dispatches its ELF directly. Every
+call returned CELL_OK, so nothing complained. Fixed upstream (`1cfe772`).
 
-So the decompression work happens and nothing ever retires the job.
+GH3 also has **six** SPU images, not five. The sixth is that workload PM -- a
+raw blob built in main memory, so `extract_spu_images.py` cannot see it.
+Captured with `SPU_DUMP_MISS` (which also had to learn the async dispatch path,
+the only one a workload PM ever takes) and lifted at base 0: 109 functions,
+96.4% coverage.
 
-### The data is good — only the signal is missing
+With both, the job library's SPU side runs for the first time, and the counter
+that had been pinned since the port began finally moves:
 
-Standing in for the completion nothing ever writes walks the boot chain:
+| `[job+...]` | before | after |
+|---|---|---|
+| `+0x00` | **1**, forever | **0** — the SPU retires the job |
+| `+0x1C` | 0 | **1** |
 
-| | files loaded |
-|---|---|
-| baseline | 14 |
-| `PPU_POKE_ADDR=13598CC0 PPU_POKE_VAL=0 PPU_POKE_MS=5` | **18** |
+`SPU_ATOM_EA=13598CC0` shows image 6 atomically updating that line, where
+before nothing in the process touched it.
 
-It gets through `ZONES/GLOBAL.PAK` + `.PAB` + the 24 MB `GLOBAL_VRAM.PAK`
-and on into `PERM_ANIMS.PAK`. So the decompressed data is good and the engine
-is happy to continue — the only thing missing is the signal.
+### What is stuck now
 
-**The screen never changes.** 34,200 frames over nine and a half minutes, 38
-captures: the loading record and nothing else, same bounding box throughout.
-The run also settles at 17-18 files rather than climbing, which is what a racy
-stand-in should do — poking a shared counter can zero it between submit and
-wait, so later jobs are retired before they finish.
-
-`PPU_POKE_*` writes the word rather than faking its reads, and that distinction
-is load-bearing. `PPU_FORCE_READ_ADDR` on the same address fakes the `lwarx`
-that loads a store-conditional's expected value, so the CAS compares against a
-value memory does not hold and retries forever — `PPU_CAS_FAIL=1` measured 1.4
-million failed store-conditionals on that one address, every one of them caused
-by the probe itself. Writing keeps `lwarx`, the CAS and the polling reader
-consistent.
+The wait is `[job+0x00] + [job+0x1C] == 0`. The SPU now clears `+0x00` and sets
+`+0x1C`, and nothing ever clears `+0x1C` -- `PPU_RWATCH` finds the waiter as
+its only reader, so no PPU collector exists and the SPU must be the one to do
+it. Poking **only** that field advances the boot 14 -> 17 files, through the
+full 24 MB GLOBAL zone, so it is the single remaining gap in this handshake.
 
 ### How the main thread was finally located
 
