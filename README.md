@@ -30,7 +30,7 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — one failed allocation, then a memset over the TOC; see below |
+| Frontend | **not reached** — a garbage element count asks for 164 MB, then memsets the null over the TOC; see below |
 
 ## Where it stops: one failed allocation, then a memset over the TOC
 
@@ -38,8 +38,9 @@ The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
 destroys.
 
-`func_0041DB10` asks its allocator for 0x14 bytes, gets 0 back, and the caller
-memsets the buffer without checking. The sweep runs UP from address 0. On real
+`func_006479BC` asks its heap for `count << 3` bytes with a count of
+0x01490752 -- 164 MB -- gets 0 back, and memsets the null buffer without
+checking. The sweep runs UP from address 0. On real
 hardware the first store faults; here the whole 32-bit guest space is backed, so
 it runs silently through the unused copy of the code image and then straight
 through this title's data segment at `0x009D0000` -- which holds `.data`, `.opd`
