@@ -94,11 +94,37 @@ and loading wheel, and parks the main thread at `lr = 0x004BF8F0`, inside
 wait: the blocker is now the original one, reached with a healthy guest instead
 of a shredded image.
 
-Worth chasing from here: three imports are unresolved, one of them called 38
-times -- `0xDF6476BD` (cellGcmSys), `0x32B94ADD` (cellSpurs) and
-`0x6C960F6D` (`cellSpursGetSpuThreadId`). All three SPU images resolve and
-dispatch (`fp=0x21F48A8621295E5A` image 6 included), and SPU tasks do signal,
-so the job system is alive -- what the poll loop is waiting for is the question.
+### What the main thread is waiting for
+
+Pinned exactly. `func_0001A66C(jobid)` is the blocking wait: it finds its slot
+as `[[TOC-0x7E84] + 0x118] + jobid*32` and spins until
+`[slot+0] + [slot+0x1C] == 0`. At the stall:
+
+```
+job manager        0x101FF000        [TOC-0x7E84]
+job array base     0x13598A00        [0x101FF118]
+polled slot        0x13598CC0        job 22
+  [slot+0]    = 0
+  [slot+0x1C] = 1                    <- never reaches 0
+```
+
+The PPU only ever writes `[slot+0] = 1` (submit, four times) and zeroes the
+pair once at init. The values the poll actually sees -- `+0` cleared and
+`+0x1C` set -- are ones the PPU never wrote, so the **SPU** took the job by DMA
+(invisible to `PPU_WWATCH`, which only sees lifted PPU stores) and marked it in
+progress, then never completed it.
+
+On the SPU side the matching symptom is a task that never does any work: task 0
+of taskset `0x14BB2000` enters `WAIT_SIGNAL` **31,000 times** with `ran=0ms`
+against 24 signals sent -- it parks, is woken, runs nothing, re-parks. The
+existing `SPURS_EF_SPU_REPLY=2` probe does not fire for it (its wait object is
+zero), so that path does not apply.
+
+Three imports are also unresolved, one called 38 times -- `0xDF6476BD`
+(cellGcmSys), `0x32B94ADD` (cellSpurs), `0x6C960F6D`
+(`cellSpursGetSpuThreadId`). All three SPU images resolve and dispatch
+(`fp=0x21F48A8621295E5A` = image 6, the job policy module), so the job system
+is alive; the job body is what never finishes.
 
 ### What is NOT wrong (measured, so it does not get re-derived)
 
