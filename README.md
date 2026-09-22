@@ -85,22 +85,42 @@ So SPU execution, DMA, atomics and both event flags all work.
 
 ### What is actually stuck
 
-The PPU's blocking wait polls `[job+0x00] + [job+0x1C] == 0` on a job block at
-`0x13598CC0` (`PS3_WAIT_OBJ` dumps it). **`[job+0x00]` is pinned at 1** — one
-job in flight, forever.
+The PPU's blocking wait polls `[job+0x00] + [job+0x1C] == 0` on a job-table
+entry at `0x13598CC0` (`PS3_WAIT_OBJ=004BF8F0` dumps it; entries are 32 bytes
+at `[[TOC-0x7E84]+0x118] + id*32`). **`[job+0x00]` is pinned at 1.**
 
-Nothing ever clears it. `PPU_WWATCH` on that block catches exactly four writes
-in a whole run, all zeroes from `func_000205A4`, and that turns out to be the
-queue **allocator** running in an init loop (`func_003F95C8` fills an array with
-its return values), not a completion path. `SPU_WATCHEA` on the same block
-shows the SPU never touches it either — every SPU EA in the run lies in
-`0x107B7xxx`, `0x14BExxxx` or `0x58000000+`, and the job block is in a
-different heap region entirely.
+Establishing that took fixing the probe first. `PPU_WWATCH` hooks `vm_write*`,
+and a lifted `stwcx.` does not go through it — it calls `ppu_stwcx32`, a host
+compare-exchange straight on guest memory. So **every atomically-maintained
+field in every port was invisible to the tree's main memory probe**, and
+watching this one reported "nothing ever writes it". Fixed upstream
+(`cd6fa6f`); the same run then shows the increment immediately:
 
-So the decompression job is submitted and counted, the SPU is busy servicing
-the *frame* queue at `0x14BEA810`, and no side ever retires the decompression
-job. That is the next thread: find what `func_0001DBB8` (the enqueue inside
-`func_0001FFB8`) writes, and whether any SPU task is ever pointed at it.
+```
+[ww] 0x13598CC0 <- 0x1 (w4) guest-fn=0x0001DBB8      the enqueue, atomically
+```
+
+That is the **only** write. `PPU_RWATCH` finds exactly two functions that ever
+touch the word — the enqueue and the waiter — and the SPU never addresses that
+memory region at all (`SPU_WATCHEA`; every SPU EA is in `0x107B7xxx`,
+`0x14BExxxx` or `0x58000000+`). Nor is completion delivered as an event:
+`sys_event_queue_receive` (syscall 130) is called **zero** times in a whole run.
+
+So the decompression work happens and nothing ever retires the job.
+
+### The data is good — only the signal is missing
+
+Forcing just that one word to 0 (`PPU_FORCE_READ_ADDR=13598CC0
+PPU_FORCE_READ_VAL=0`) advances the boot **cleanly**: 14 -> 16 files, into
+`ZONES/GLOBAL.PAK` + `.PAB`, with **1** NULL dereference in the run. (The
+earlier, cruder force of the SPU/PPU path selector advanced further but cost
+12.7 million of them — that one broke an invariant; this one does not.) A clean
+advance means the decompressed data the game goes on to use is valid, i.e. the
+SPU really did the work and only the completion signal is absent.
+
+It then re-blocks, because each job takes its own table entry and the force
+pins one address. The screen is unchanged throughout — still the loading
+record — so this buys load progress, not a frontend.
 
 How the stall was found, since three earlier guesses were wrong: `PS3_POLLTOP`
 (added upstream for this) histograms `sys_timer_usleep` callers **by thread**.
