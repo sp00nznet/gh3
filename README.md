@@ -111,36 +111,41 @@ Note the walk prints RETURN addresses, so it never names the innermost frame --
 the function that actually made the failing call is the one missing from the
 top of that list.
 
-### The open question: a count that is really the TOC
+### The open question: a hash table whose capacity field is the TOC
 
-The allocation is refused honestly -- the request is enormous, because the
-element count is nonsense. `r31` is callee-saved and holds exactly `len >> 2`
-at the failure, so it is the count:
+`func_00647BEC` is an open-addressing hash-table insert -- it uses 0x9E3779B1,
+the golden-ratio hash constant. Its grow path is:
 
 ```
-r31        = 0x01490752   the element count
-r31 << 2   = 0x05241D48   the memset length, measured    ->  82 MB
-TOC        = 0x00A483A8
-r31 == (TOC + 1) * 2      exactly
+loc_00647CF8:   r4 = capacity * 2 + 2 ;  func_006479BC(table, r4)   // rehash
 ```
 
-That is not a plausible count; it is the TOC pointer with arithmetic on it. The
-same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]` reports, so
-one bad word explains both. Finding the load that produces `TOC+1` where a
-count belongs is the next step.
+and the arithmetic closes exactly:
 
-Worth ruling in or out first: the lifter rewrites `ld r2,N(r1)` after an
-indirect call into a hardcoded `ctx->gpr[2] = 0x00A483A8` (`TOCFIX`), so
-anything mishandling a TOC restore puts a TOC value somewhere it does not
-belong.
+```
+[table + 8]  (capacity) = 0x00A483A8   == the TOC, exactly
+capacity * 2 + 2        = 0x01490752   == the observed count, exactly
+count << 2              = 0x05241D48   == the measured memset length
+```
 
-Which of the allocator entry points holds the count is not pinned yet.
-`r30 = 0x009F4538` is `[TOC+0x3734]`, loaded by an 18-function family at
-`0x006477F4..0x00648xxx` that all do the r13-keyed heap selection, so it says
-"inside that family" and no more. `[sp+0x10] = 0x00647A50` points at
-`func_006479BC` specifically, but its caller `func_00661EF8` passes
-`r4 = 0x10040DC8`, not the count -- so that is not settled either. One more
-measurement.
+The other caller, `func_00647BA0`, rounds its request to a power of two and
+0x01490752 is not one, so the failing call is definitely this grow path.
+
+**So the whole failure is one field: a hash table's capacity is the TOC
+pointer.** It asks to rehash into 0x01490752 buckets, the heap refuses the
+164 MB, and the null result is memset for 82 MB.
+
+Not yet settled: how the TOC gets into that field. Two candidates worth one
+measurement each --
+
+1. The table is a stack local used before initialisation. `func_0023EE10`
+   builds one at `r1 + 0x94` and passes it down, and a stale
+   `std r2, 0x28(r1)` TOC-save at the right depth would land exactly there.
+2. The table pointer is wrong and lands in `.opd`, where every second word is
+   the TOC.
+
+They are trivially distinguishable by the pointer value: a stack local is
+`0x0FEFAxxx`, `.opd` is `0x00A2xxxx`. Capture `r3` at `func_006479BC` entry.
 
 ### Heap selection works; the null heap is a red herring
 
