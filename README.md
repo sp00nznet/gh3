@@ -54,6 +54,35 @@ It reads its asset table-of-contents correctly on the way:
 scripts live in `COMPRESSED/PS3/PAK/QB.PAK.PS3` + `QB.PAB.PS3` and Neversoft
 probes the loose path first — but the 591 PAKs (1.1 GB) are never touched.
 
+### The hang, root-caused
+
+The main thread pins a core and never loads an asset. Traced end to end:
+
+```
+func_0026334C        builds a name on the stack, then
+  func_00263014      LOOKS SOMETHING UP  ->  returns NULL        <-- the bug
+  func_00270F60      passes that NULL straight on as a container
+    func_00264134    iterates it:
+                         end = obj + obj->size;   cur = obj + 0x1C;
+                         while (end != cur) cur = step(cur);
+```
+
+With `obj == NULL`, `obj->size` reads as **0**, so `end` is 0 while `cur`
+starts at 0x1C. The loop terminates on **equality**, which can now never
+happen — so it runs **48 million iterations** in 70 seconds, climbing through
+2.8 GB of address space, allocating and freeing a ~20-byte node each time.
+
+On real hardware this never gets that far: the PS3 leaves the first 64 KB
+unmapped, so `obj->size` through a NULL pointer is a data-storage exception and
+the title dies on the spot holding the pointer. Our VM is flat and
+demand-committed, so address 0 reads back as zero and the fault degrades into a
+silent infinite loop. ps3recomp now reports it (`[null-read]`, added for this),
+which names the chain in one run — it took six probe-and-rebuild cycles by hand.
+
+**So the open question is narrow: why does `func_00263014` return NULL?** It is
+handed a freshly formatted string and returns a pointer, and it fails on the
+very first call — which lines up with the title never opening a PAK.
+
 ### What has been ruled out
 
 Most of the obvious suspects are eliminated, which is the useful part:
@@ -63,21 +92,23 @@ Most of the obvious suspects are eliminated, which is the useful part:
   `0x00A257A0`) running its **service loop correctly** — it pumps, sleeps 1 ms,
   and spins only while a quit flag at `0x106A5B48` stays zero. That is the
   thread working, not hanging, and I mistook it for the stall first time round.
+* **Not a stuck spinlock.** The `sys_spinlock_lock`/`unlock` storm is GH3's own
+  allocator being hot. ps3recomp's stuck-lock detector (added for this) never
+  fires, which is what ruled it out.
 * **Not a missing file or a wrong error code.** `CELL_FS_ENOENT` is correct and
   the file genuinely is not on disc.
-* **Not SPURS.** There is no SPURS activity at all yet — the title never gets
-  as far as submitting SPU work, so the empty `src/spu_gen/` is not the cause.
-* **Not a dead thread.** Both guest threads (`NetThreadUpdate`,
-  `CAsyncFileSys::sThreadUpdate`) start and run.
+* **Not SPURS.** There is no SPURS activity at all yet, so the empty
+  `src/spu_gen/` is not the cause.
+* **Not a dead thread.** Both guest threads start and run.
 
-**What the main thread is doing:** its own heap allocator. The HLE tail is
-`sys_mmapper_allocate_memory` → `sys_mmapper_map_memory` → `sys_lwmutex_lock`
-and then `sys_spinlock_lock`/`unlock` pairs forever — that pairing is GH3's
-spinlock-protected allocator, hot rather than wedged.
-
-So the open question is why, having initialised GCM and its heap, the main
-thread never queues the first PAK read through the async filesystem that is
-sitting there idle waiting for work.
+**Two diagnostics lied on the way, both now fixed upstream.** The watchdog
+reported the wedge as `cellPadInit` (it never recorded names for
+`ps3_hle_register_ctx` handlers, so it printed whichever *table* handler ran
+last) — for a game that needs a guitar controller, a very convincing wrong
+answer. And a host-stack backtrace through lifted code produced a confident
+five-frame call chain that direct call counters proved was **fiction**: every
+function in it is called exactly once. The lifted TU has no unwind tables, which
+the sampling profiler already documents; `ctx->lr` is the trustworthy chain.
 
 ### One trap already cleared
 
