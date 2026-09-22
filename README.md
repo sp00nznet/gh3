@@ -80,11 +80,38 @@ from `sys_initialize_tls` -- not `PPU_TLS_TP` (`0x10F07000`). Four write watches
 aimed at the wrong block all read as "nothing ever writes this", which is how
 the allocator stack got blamed. `[GSTACK]` now prints `r13` and `tid`.
 
-### The open question
+### The open question: a count that is really the TOC
 
-Why a 0x14-byte allocation fails. The game never calls
-`sys_memory_get_user_memory_size` and only ever asks lv2 for ~7 MB in total, so
-whatever sizes its arena (~`0x11000000` upward) comes from somewhere else.
+The allocation does not fail spuriously -- it is refused honestly, because the
+request is enormous. `func_006479BC(descriptor, count)` takes the element count
+in r4, and at the failure it is `r31 = 0x01490752`:
+
+```
+r31        = 0x01490752
+r31 << 3   = 0x0A483A90   the allocation size   -> 164 MB, refused
+r31 << 2   = 0x05241D48   the memset length     ->  82 MB, over a null pointer
+TOC        = 0x00A483A8
+r31 == (TOC + 1) * 2      exactly
+```
+
+That is not a plausible count; it is the TOC pointer with arithmetic on it. The
+same `0x05241D48` shows up as the bogus "OPD" in the `[null-call]` reports, so
+the one bad word propagates. r31 is `func_006479BC`'s *second argument*, so the
+garbage is computed by its caller -- that caller is the next thing to find.
+
+A TOC-valued word turning up where a count belongs is the signature to chase:
+the lifter rewrites `ld r2,N(r1)` after an indirect call into a hardcoded
+`ctx->gpr[2] = 0x00A483A8` (`TOCFIX`), so a misidentified `ld rX,N(r1)` would
+put the TOC in the wrong register. Worth ruling in or out first.
+
+### Heap selection works; the null heap is a red herring
+
+`func_006479BC` picks a heap by comparing r13 against a table of registered
+thread pointers at `[[TOC+0x3734] - 0x8000]`, falling back to a default slot.
+Measured: tid=1, 7 and 8 each register and get heaps A/B/C
+(`0x107BC2E0/E4/E8` <- `0x110BDAF0`, `0xD00B5C90`, `0xD00F6BE0`), all long
+before the failure and never zeroed. The DEFAULT slot `0x107BC2EC` is never
+written -- by design, not a bug. The main thread matches heap A and gets it.
 
 ## Building
 
