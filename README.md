@@ -131,11 +131,26 @@ repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
 `WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
 jobmanager runs one SPU at a time) and far more stable.
 
-**Not solved: the job is claimed and never released.** The wait is
-`[job+0x00] + [job+0x1C] == 0`. The SPU clears `+0x00` and sets `+0x1C` --
-claiming the job -- and never clears it. Single-lane does not change that:
-the SPU still issues ~96M atomics, now all SUCCEEDING, so it is polling some
-condition in guest code that never becomes true while holding the job.
+**Not solved: no PPU-side consumer ever runs.** The SPU claims the job
+(`[job+0x1C]`) and holds it, polling `0x101FF100` ~96M times with every
+atomic now SUCCEEDING. That line is frozen:
+
+```
++0x18 = 0x13598A00   +0x1C = 0x3E (62)   +0x20 = 0x2E (46)
++0x28 = 0x400        +0x2C.. = FFFFFFFF x5
+```
+
+Head 62, tail 46 -- sixteen results produced and undrained, slot masks full.
+So the SPU is a producer waiting on a **full ring**, and `PPU_RWATCH` on the
+ring indices finds exactly one reader in a whole run: `func_000205A4`, the
+allocator, at init. **Nothing on the PPU ever consumes.** The PPU is
+meanwhile blocked in `func_0001A66C` waiting for the job the SPU cannot
+finish -- each side waiting on the other.
+
+The consumer is very likely one of `func_0002064C`, `func_000207A8` or
+`func_000204C8`: all three index the job table (`[[TOC-0x7E84]+0x118]`) and
+all three have **zero callers** in the lifted tree, so they are reached
+indirectly or not at all. Finding what should invoke them is the next step.
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
