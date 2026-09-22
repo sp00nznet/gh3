@@ -131,26 +131,37 @@ repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
 `WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
 jobmanager runs one SPU at a time) and far more stable.
 
-**Not solved**, and four readings of the memory involved have now been wrong.
-What is actually measured:
+**SOLVED -- the job body was being INTERPRETED.**
 
-* The SPU claims the job (`[job+0x1C]` -> 1) and never releases it.
-* It polls `0x101FF100` ~96M times. Single-lane, every atomic SUCCEEDS --
-  and **none of them changes the line**: 0 of 48 sampled PUTLLCs differ from
-  the value they read. It is a pure poll, not a producer or a consumer.
-* The fields on that line belong to the PPU's queue ALLOCATOR, not to a work
-  ring: `func_000205A4` writes `0x101FF120` with sequential values
-  (0x8, 0x9, 0xA, ... ), so the 46 seen there is an allocation count.
-* The SPU's DMA in that state touches `0x13564980`, `0x13564A60`,
-  `0x13598CC4` (job+4) and `0x135991D0`.
-* 9.5 minutes single-lane moves none of it.
+The workload PM streams its job body in from guest `0x1011A300` (0x1790 bytes)
+to LS 0x5000 and branches into it. It is never dispatched, so the workload
+registry cannot see it, and with no lifted body the SPU interprets it. That is
+correct and roughly 100x too slow: 9.5 minutes of wall clock did not finish one
+decompression.
 
-Wrong readings recorded so that nobody repeats them: "a full ring nobody
-drains", "no PPU consumer exists", "a 62-item work list consumed to item 46",
-and "the SPU advances the consumer index". Each died to the next measurement.
-**The SPU is waiting on something not yet identified; the line it polls is the
-allocator's bookkeeping.** Start there, and check who writes a value before
-deciding what it means -- that is what killed all four.
+Every "the SPU is stuck" reading in this file was looking at that. The SPU was
+never stuck -- `SPU_DMATRACE` shows it writing 40 distinct VRAM addresses
+spanning `0xC00F2800..0xC014E800`, no repeats, i.e. genuine texture upload in
+progress. It was simply not going to finish.
+
+Lifted at `--base 0x5000` (82 functions, 97.9% coverage) and registered under
+image 6 so the indirect-branch lookup finds it, the same job completes in
+seconds. **With no hacks at all** -- no poked counters, no forced reads:
+
+| | files loaded |
+|---|---|
+| baseline | 14 |
+| job body lifted | **17** |
+
+through `ZONES/GLOBAL.PAK` + `.PAB` + the 24 MB `GLOBAL_VRAM.PAK`, and the main
+thread leaves `0x004BF8F0` for the first time since this port began. It now
+sits at `lr=0x00649B08`, a loop in `func_006499D0` calling `func_00649880`.
+
+Requires `SPURS_FORCE_SPUS=1` -- four lanes livelock on the jobIndex atomic.
+
+**Next:** `func_00261F54` reads a struct through a NULL pointer
+(`[null-read] NULL+0x0/+4/+8/+0xC`). Our flat VM returns zero for address 0, so
+a fatal bug degrades into a silent hang -- that is the thing to chase.
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
