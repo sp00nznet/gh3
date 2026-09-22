@@ -32,24 +32,50 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
 ## Where it stops
 
-It boots, loads its first assets, brings up SPURS with two tasks, and reaches
-its **boot/legal screen load** — then presents nothing. Files it opens now:
+Everything is running — PPU, SPU and RSX — and every frame is still black.
+
+| | |
+|---|---|
+| Files opened | **14, zero failures** |
+| SPU | **both images dispatch by fingerprint and run** (`image=4`, `image=5`) |
+| Draw groups | **3,226 executed, 0 dropped**, 3,069 `draw_arrays` in the FIFO |
+| Guest clears | 6,455 |
+| Textures created | **0** |
+
+Assets it loads: `COMPRESS.TOC`, `ENGINE_PARAMS.QB`, `QB.PAK`+`QB.PAB`, the
+material library, `BOOT_LEGAL.IMG`+`.IMV`, `LOAD_WHEEL.IMG`+`.IMV`, animation
+data, `CUTSCENE_INFOS.PAK`, `GLOBAL_AD_TEX.PAK`+`_VRAM`.
+
+### The frontier: a sampled surface nothing draws into
+
+Not one real texture is ever created — `binds[white=0 real=0 surf=3226]`, every
+single bind resolves to a render surface. The obvious conclusion is that the
+alias test is too loose, and it is wrong. With the alias **hit** reported
+(added upstream for this):
 
 ```
-DATA//COMPRESSED/PS3/COMPRESS.TOC.PS3          the asset table of contents
-DATA/SCRIPTS/ENGINE/ENGINE_PARAMS.QB.PS3       the first script
-DATA/COMPRESSED/PS3/PAK/QB.PAK.PS3 + QB.PAB    the script bundle
-DATA/COMPRESSED/PS3/FXFILES/MATERIALLIBRARY.BIN.PS3
-DATA/.../IMAGES/LOADINGSCREENS/BOOT_LEGAL.IMG + .IMV
-DATA/.../IMAGES/LOADINGSCREENS/LOAD_WHEEL.IMG + .IMV
-DATA/ANIMS/STANDARDKEYQ.BIN, STANDARDKEYT.BIN
-DATA/COMPRESSED/PS3/PAK/CUTSCENE_INFOS.PAK, GLOBAL_AD_TEX.PAK + _VRAM
+[alias-hit] tex 0:0x00200000 fmt=0xA5 1040x592 -> surface[1] 0:0x00200000 1040x592
 ```
 
-14 opens, **zero failures**. 5,464 command packets reach the draw engine and all
-5,464 groups execute — but they are **empty** (`empty=10921`), so nothing is
-drawn and every presented frame is black. That is the current frontier: the
-title is submitting command groups that carry no geometry.
+Same location, same offset, same dimensions — a deliberate render-to-texture
+pass. The bind is correct. `LD_SURF_DUMP` then says what is actually wrong:
+
+```
+[surf-dump] slot=0 0:0x00000000 1280x720 nonblack=0 draw_gen=0    clear_gen=0
+[surf-dump] slot=1 0:0x00200000 1040x592 nonblack=0 draw_gen=0    clear_gen=3794
+[surf-dump] slot=2 0:0x00510000 1280x720 nonblack=0 draw_gen=3796 clear_gen=3795
+[surf-dump] slot=3 0:0x00894000 1280x720 nonblack=0 draw_gen=3793 clear_gen=3792
+```
+
+**Slot 1 — the surface every draw samples — is cleared 3,794 times and has
+`draw_gen=0`: nothing ever renders into it.** Slots 2 and 3 *are* drawn into,
+but they sample slot 1, so they render black, and the screen stays black.
+
+So the question is narrow: what should be filling surface 1 (1040x592 at
+0x200000), and why does that pass never issue a draw. Ruled out already — it is
+not a 2D/NV3089 blit (no 2D engine traffic at all), not a dropped command (0
+dropped groups, and the unknown methods are one-off state), and not the SPU
+(both tasks dispatch and run).
 
 ### The hang that was here, and what it actually was
 
