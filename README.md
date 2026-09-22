@@ -146,25 +146,38 @@ Every value verified against the raw ELF bytes.
 vtable address where an object belongs, which is what `*(obj)` gives you if it
 is dereferenced once too many.
 
-**Which frame holds it is still open**, and three plausible answers have now
-been wrong in a row. Ruled out by measurement:
+**Which frame holds it is still open.** With the walk fixed, the call SITES
+are solid (the walk prints return addresses, so each entry names where the
+frame below it was called from):
 
-- `func_006637AC` entered with it -- no. A watch on `[r3+0x78]`, which it reads
-  unconditionally at entry, never fires for `0x10104818`.
-- its only direct caller `func_00663B84` -- no. `PS3_CALLTRACE_TO=00663B84`
-  shows `r3 = 0x0FEFA804`, an ordinary stack object, and `func_00662A28` in
-  between has a single exit that does restore r31.
-- that stack object's `+0x18` field -- no. A watch on `0x0FEFA81C` shows the
-  TOC written there by HOST code (`guest-fn=0x00000000`), never `0x00A331A0`.
+```
+func_00647BEC   <- called at 0x00663A40, in func_006637AC
+                <- called at 0x00648AA8, in func_00648A30
+                <- called at 0x00664E88, in func_00664C38
+                <- called at 0x0023EE98, in func_0023EE10   (startup init)
+```
 
-The `0x101047B8` read that `PPU_RWATCH` catches first is a DIFFERENT read from
-the one feeding the hash insert -- conflating them cost two runs. Note also
-that callee-saved shadows are fine: of 434 real tail calls in functions using
-them, exactly one is missing a restore, and it is unrelated library code.
+`func_006637AC` does `r25 = r3` at entry and later
+`table = [r25 + 0x18] + 0xC`, and `[0x101047A0 + 0x18]` is `0x00A331A0`, which
+gives exactly the observed `0x00A331AC`. So `r25 = 0x101047A0` at the point of
+use is certain. What is NOT explained is how it got there:
 
-The tooling is now good enough to settle this: fixed stack walk, whole GPR file
-on every dump, and `PPU_RWATCH` with a chain. What it needs is a watch that
-fires on the read feeding `func_00647BEC`, not the first read of that address.
+- `func_006637AC` was **not entered** with it. It reads `[r3+0x78]`
+  unconditionally two lines after `r25 = r3`, and a watch on `0x10104818` never
+  fires.
+- nothing **writes** `0x101047A0` either -- `func_00648A30` stores its
+  allocation to `[r3+0]`, so had it been called with the vtable it would have
+  scribbled on it; a watch there is silent.
+- the address is never built as a literal, and its three static homes are in
+  `ph1` at TOC offsets far outside the +/-32K window.
+
+That leaves r25 being clobbered by a callee between `func_006637AC`'s entry and
+the use. Worth knowing before chasing it: of 434 real tail calls in functions
+using `_cs_` shadows exactly one misses a restore (unrelated library code), but
+12,345 functions write a callee-saved GPR with neither a shadow nor a stack
+reload -- mostly the lifter's split continuations, which makes that scan too
+noisy to use as-is. Narrowing it to callees actually on this path is the next
+step.
 
 ### Heap selection works; the null heap is a red herring
 
