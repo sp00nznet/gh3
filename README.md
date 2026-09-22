@@ -131,26 +131,27 @@ repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
 `WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
 jobmanager runs one SPU at a time) and far more stable.
 
-**Not solved: no PPU-side consumer ever runs.** The SPU claims the job
-(`[job+0x1C]`) and holds it, polling `0x101FF100` ~96M times with every
-atomic now SUCCEEDING. That line is frozen:
+**Not solved: the SPU consumer stalls partway through its work list.**
+
+The SPU claims the job (`[job+0x1C]`) and polls `0x101FF100` ~96M times with
+every atomic SUCCEEDING. Read the writers before reading the values, because
+the obvious interpretation is wrong:
 
 ```
-+0x18 = 0x13598A00   +0x1C = 0x3E (62)   +0x20 = 0x2E (46)
-+0x28 = 0x400        +0x2C.. = FFFFFFFF x5
+[ww] 0x101FF118 <- 0x13598A00   list base      by func_0002005C (PPU)
+[ww] 0x101FF11C <- 0x3E  (62)   item count     by func_0002005C (PPU)
+[ww] 0x101FF120 <- 0x0          consumer index by func_0002005C (PPU)
 ```
 
-Head 62, tail 46 -- sixteen results produced and undrained, slot masks full.
-So the SPU is a producer waiting on a **full ring**, and `PPU_RWATCH` on the
-ring indices finds exactly one reader in a whole run: `func_000205A4`, the
-allocator, at init. **Nothing on the PPU ever consumes.** The PPU is
-meanwhile blocked in `func_0001A66C` waiting for the job the SPU cannot
-finish -- each side waiting on the other.
+The PPU publishes 62 items and a consumer index of **zero**; the SPU then
+advances that index to **46** and stops. So this is not a full ring waiting on
+a PPU drain -- the SPU IS the consumer, it processes 46 of 62 items, and it
+stalls on the 47th. Nine and a half minutes single-lane does not move it, so
+it is not the interpreter being slow either.
 
-The consumer is very likely one of `func_0002064C`, `func_000207A8` or
-`func_000204C8`: all three index the job table (`[[TOC-0x7E84]+0x118]`) and
-all three have **zero callers** in the lifted tree, so they are reached
-indirectly or not at all. Finding what should invoke them is the next step.
+(An earlier version of this file called it a full ring nobody drains. That was
+wrong: it read `+0x20` as a producer-written tail without checking who wrote
+it. The PPU wrote 0.)
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
