@@ -141,13 +141,34 @@ It does do real work first: `cmd=0x40` GETs pull 16 KB input chunks into LS
 and 35 out. That is only ~0.5 MB of a 24 MB file, so it stalls EARLY in the
 decompression, not at the end.
 
-Note the SPU never PUTs to the job array (`0x13598xxx`) at all -- it only GETs
-`0x13598CC4`. So whatever set the polled slot to `[+0]=0, [+0x1C]=1` did not
-come through a traced DMA, and `PPU_WWATCH` cannot see SPU-side writes. That is
-the next thing to nail down, and the address has a history: `0x101FF100` has
-produced four wrong readings in earlier sessions ("full ring nobody drains",
-"no PPU consumer", "62-item work list consumed to item 46", "SPU advances the
-consumer index"). Measure it; do not narrate it.
+Dumping the line the atomic writes settles what the SPU actually sees:
+
+```
+0x101FF100:  0 0 0 0 | 0 0 | 13598A00 | 0000003E
+                             array base  62 slots
+```
+
+So **coherency is fine** -- the base and slot count the PPU wrote are visible to
+the SPU -- and the submit flags at `+0x04` and `+0x10`, which the PPU set to 1,
+read back as 0: consumed. The SPU took the job, did its ~0.5 MB of work, and
+returned to the poll loop without completing it. No lifting gap is involved:
+the run reports no SPU miss, no interpreter fallback and no branch-to-0, so the
+job body runs fully lifted.
+
+What is missing is the completion. The SPU never PUTs to the job array at all
+(one GET of `0x13598CC4`) and takes no atomic on the slot's lock line -- the
+only atomics in the run are `0x101FF100` and one `0x107B7800`. Yet the polled
+slot reads `[+0]=0, [+0x1C]=1`, values neither side wrote through anything this
+runtime traces. Finding the write that does land there is the next step.
+
+`0x101FF100` has a history of four wrong readings in earlier sessions ("full
+ring nobody drains", "no PPU consumer", "62-item work list consumed to item
+46", "SPU advances the consumer index"). Measure it; do not narrate it.
+
+**Build note:** `gh3` links a PREBUILT `build-gate/ps3recomp_runtime.lib`. Only
+`runtime/ppu/*.cpp` is compiled into the port directly, so a change to
+`runtime/spu/*` needs `ninja -C build-gate ps3recomp_runtime` before relinking,
+or the run silently uses the old code.
 
 Three imports are also unresolved, one called 38 times -- `0xDF6476BD`
 (cellGcmSys), `0x32B94ADD` (cellSpurs), `0x6C960F6D`
