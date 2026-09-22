@@ -30,9 +30,9 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — an OPD address is used as a hash table during init; the rehash asks for 164 MB, fails, and memsets 82 MB over the image |
+| Frontend | **not reached** — a `this` that is really a vtable; slot 6 becomes a hash table, the rehash asks 164 MB, fails, memsets 82 MB over the image |
 
-## Where it stops: an OPD used as a hash table, during startup init
+## Where it stops: a `this` that is really a vtable, during startup init
 
 The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
@@ -111,38 +111,42 @@ Note the walk prints RETURN addresses, so it never names the innermost frame --
 the function that actually made the failing call is the one missing from the
 top of that list.
 
-### Root cause: an OPD is being used as a hash table
+### Root cause: a `this` pointer that is actually a vtable pointer
 
-`func_00647BEC` is an open-addressing hash-table insert -- it uses 0x9E3779B1,
-the golden-ratio hash constant. Its grow path is `newcap = capacity*2 + 2`,
-and it is handed a table pointer of `0x00A331AC`. That address is inside
-`.opd`: it is the TOC field of the function descriptor at `0x00A331A8`, i.e.
-**opd + 4**.
-
-Read as a hash table, a run of function descriptors gives:
+`func_006637AC` is entered with `r3 = 0x101047A0`. That address is a **vtable**
+-- all twelve slots inspected are `.opd` pointers:
 
 ```
-r28 (table)  = 0x00A331AC     -> OPD 0x00A331A8 = {code=0x0074DACC, toc=0x00A483A8}
-[table+4]    = 0x0074DAE8     the NEXT descriptor's code address, read as the load
-[table+8]    = 0x00A483A8     the NEXT descriptor's TOC, read as the capacity
-capacity*2+2 = 0x01490752     the rehash count            -> 164 MB, refused
-count << 2   = 0x05241D48     the memset length, measured ->  82 MB, over NULL
+0x101047A0 +0x00 00A331D0  +0x04 00A331B0  +0x08 00A0FE00  +0x0C 00A33130
+           +0x10 00A33138  +0x14 00A33198  +0x18 00A331A0  +0x1C 00A33140
+           +0x20 00A33148  +0x24 00A331A8  +0x28 00A33190  +0x2C 00A32FB0
 ```
 
-Every number checks against the raw ELF bytes. The other caller,
-`func_00647BA0`, rounds its request to a power of two and 0x01490752 is not
-one, so the failing call is definitely this grow path.
+It keeps that value in r25 and later does
+`table = [r25 + 0x18] + 0xC` -- reading **vtable slot 6**, a function
+descriptor address, and using it as an object. Everything after that is
+mechanical:
 
-**So the entire boot failure is one bad pointer**: something hands the
-container code a function descriptor address plus four where an object pointer
-belongs. Find who produces `0x00A331AC`. `func_006479BC` is never an
-indirect-call target -- `PS3_CALLTRACE` cannot see it -- and its only direct
-callers are `func_00647BA0` and `func_00647BEC`, so work up from there.
+```
+[r25+0x18]   = 0x00A331A0   vtable slot 6 = OPD for code 0x0074DAB0
+table        = 0x00A331AC   = that OPD + 0xC, i.e. inside .opd
+[table+4]    = 0x0074DAE8   the NEXT descriptor's code, read as the load
+[table+8]    = 0x00A483A8   the NEXT descriptor's TOC,  read as the capacity
+cap*2 + 2    = 0x01490752   the rehash count            -> 164 MB, refused
+count << 2   = 0x05241D48   the memset length, measured ->  82 MB, over NULL
+```
 
-Worth checking early: whether a runtime path hands guest code an OPD address in
-r3 that then gets stored as an object. The log carries
-`guest_call: OPD 0x00A24868 -> code 0x00000000 not registered`, so OPD
-addresses do reach guest registers.
+Every value verified against the raw ELF bytes.
+
+**So the whole boot failure is one bad `this`**: somewhere up the chain an
+object pointer is dereferenced once too many, and `*(obj)` is an object's
+vtable. `r25` is simply `func_006637AC`'s first argument, and its caller
+`func_00663B84` passes its own `r3` straight through, so the bad pointer comes
+from further up. Walking that `this` provenance is the next step.
+
+Handy: `[GSTACK]` now prints the whole GPR file, so one run gives every
+register rather than whichever two were guessed in advance. `PPU_RWATCH` dumps
+the chain and registers on its first hit, which is how r25 was caught.
 
 ### Heap selection works; the null heap is a red herring
 
