@@ -30,9 +30,9 @@ is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 | Boot | **runs** — 17 system modules, `cellGame` check passes, `sceNp` init, window open, ~63 fps |
 | Assets | **loaded** — 14 files, every read complete, zero failures |
 | Render | **draws** — the animated loading record is on screen |
-| Frontend | **not reached** — a `this` that is really a vtable; slot 6 becomes a hash table, the rehash asks 164 MB, fails, memsets 82 MB over the image |
+| Frontend | **not reached** — a vtable used as an object; slot 6 becomes a hash table, the rehash asks 164 MB, fails, memsets 82 MB over the image |
 
-## Where it stops: a `this` that is really a vtable, during startup init
+## Where it stops: a vtable used as an object, during startup init
 
 The stall is not in the decompressor's SPU job. It is a `memset(NULL, 0, ~10MB)`
 that the decompressor path makes on the main thread, and what that memset
@@ -111,10 +111,11 @@ Note the walk prints RETURN addresses, so it never names the innermost frame --
 the function that actually made the failing call is the one missing from the
 top of that list.
 
-### Root cause: a `this` pointer that is actually a vtable pointer
+### Root cause: a vtable address used as an object pointer
 
-`func_006637AC` is entered with `r3 = 0x101047A0`. That address is a **vtable**
--- all twelve slots inspected are `.opd` pointers:
+Something is holding `r25 = 0x101047A0` and reading `[r25 + 0x18]` as data.
+That address is a **vtable** -- all twelve slots inspected are `.opd`
+pointers:
 
 ```
 0x101047A0 +0x00 00A331D0  +0x04 00A331B0  +0x08 00A0FE00  +0x0C 00A33130
@@ -122,10 +123,8 @@ top of that list.
            +0x20 00A33148  +0x24 00A331A8  +0x28 00A33190  +0x2C 00A32FB0
 ```
 
-It keeps that value in r25 and later does
-`table = [r25 + 0x18] + 0xC` -- reading **vtable slot 6**, a function
-descriptor address, and using it as an object. Everything after that is
-mechanical:
+The read is `table = [r25 + 0x18] + 0xC` -- **vtable slot 6**, a function
+descriptor address, used as an object. Everything after that is mechanical:
 
 ```
 [r25+0x18]   = 0x00A331A0   vtable slot 6 = OPD for code 0x0074DAB0
@@ -138,11 +137,22 @@ count << 2   = 0x05241D48   the memset length, measured ->  82 MB, over NULL
 
 Every value verified against the raw ELF bytes.
 
-**So the whole boot failure is one bad `this`**: somewhere up the chain an
-object pointer is dereferenced once too many, and `*(obj)` is an object's
-vtable. `r25` is simply `func_006637AC`'s first argument, and its caller
-`func_00663B84` passes its own `r3` straight through, so the bad pointer comes
-from further up. Walking that `this` provenance is the next step.
+**So the whole boot failure is one bad object pointer**: something holds a
+vtable address where an object belongs, which is what `*(obj)` gives you if it
+is dereferenced once too many.
+
+Which function holds it is NOT pinned, and two plausible-looking answers have
+already been wrong. The read is sampled as `func_006637AC`, whose `r3` becomes
+`r25` at entry -- but a watch on `[r3 + 0x78]`, which that function reads at
+entry, never fires for `0x101047A0`, so it was not entered with it. Its only
+direct caller `func_00663B84` is invoked with `r3 = 0x0FEFA804`, a perfectly
+ordinary stack object (confirmed by `PS3_CALLTRACE_TO=00663B84`), and
+`func_00662A28` in between has a single exit that does restore r31.
+
+The sampled `guest-fn` is a host return address and identical code folding
+makes it ambiguous, so treat it as a hint. The next step is to pin which frame
+owns `r25 = 0x101047A0` -- a watch on `0x101047B8` fires exactly once and dumps
+the full register file, so that is the run to build on.
 
 Handy: `[GSTACK]` now prints the whole GPR file, so one run gives every
 register rather than whichever two were guessed in advance. `PPU_RWATCH` dumps
