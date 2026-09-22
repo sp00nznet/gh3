@@ -131,30 +131,26 @@ repo's own July finding, that 2+ lanes race on the shared jobIndex atomic in
 `WwsJob_AllocateJob` and single-lane is both correct (RPCS3 oracle: the
 jobmanager runs one SPU at a time) and far more stable.
 
-**Not solved.** What is measured, and only that:
+**Not solved**, and four readings of the memory involved have now been wrong.
+What is actually measured:
 
 * The SPU claims the job (`[job+0x1C]` -> 1) and never releases it.
-* It polls `0x101FF100` ~96M times, every atomic SUCCEEDING (single-lane).
-* The PPU publishes three fields on that line and nothing else touches them:
-
-```
-[ww] 0x101FF118 <- 0x13598A00   by func_0002005C
-[ww] 0x101FF11C <- 0x3E  (62)   by func_0002005C
-[ww] 0x101FF120 <- 0x0          by func_0002005C
-```
-
-* `0x101FF120` later reads **46**, advanced by the SPU through its lock-line
-  atomics (it is not in the SPU's DMA trace, which does not cover PUTLLC).
+* It polls `0x101FF100` ~96M times. Single-lane, every atomic SUCCEEDS --
+  and **none of them changes the line**: 0 of 48 sampled PUTLLCs differ from
+  the value they read. It is a pure poll, not a producer or a consumer.
+* The fields on that line belong to the PPU's queue ALLOCATOR, not to a work
+  ring: `func_000205A4` writes `0x101FF120` with sequential values
+  (0x8, 0x9, 0xA, ... ), so the 46 seen there is an allocation count.
 * The SPU's DMA in that state touches `0x13564980`, `0x13564A60`,
-  `0x13598CC4` (job+4) and `0x135991D0` -- **never** the region `0x13598A00`
-  points at.
-* 9.5 minutes single-lane does not move any of it.
+  `0x13598CC4` (job+4) and `0x135991D0`.
+* 9.5 minutes single-lane moves none of it.
 
-**What those fields mean is NOT established.** Two earlier readings of them
-are recorded below as wrong, and the third -- "a 62-item work list the SPU
-consumes to item 46" -- does not survive the DMA trace either, because the SPU
-never reads that list. Do not build on any of them; start by finding what
-writes `0x101FF120` on the SPU side and what it is counting.
+Wrong readings recorded so that nobody repeats them: "a full ring nobody
+drains", "no PPU consumer exists", "a 62-item work list consumed to item 46",
+and "the SPU advances the consumer index". Each died to the next measurement.
+**The SPU is waiting on something not yet identified; the line it polls is the
+allocator's bookkeeping.** Start there, and check who writes a value before
+deciding what it means -- that is what killed all four.
 
 Poking only `+0x1C` advances the boot 14 -> 17 files through the full 24 MB
 GLOBAL zone, so that field is the single remaining gap in this handshake.
