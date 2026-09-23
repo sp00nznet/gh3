@@ -37,6 +37,11 @@ extern void jobpm_spu_recomp_register(void);
  * Lifted at --base 0x5000 so its addresses equal the LS ones, and registered
  * under image 6 so the indirect-branch lookup finds it. */
 extern void jobbody_spu_recomp_register(void);
+extern void job_14B86900_spu_recomp_register(void);
+extern void job_14B85000_spu_recomp_register(void);
+extern void job_10119580_spu_recomp_register(void);
+extern void job_1011BB00_spu_recomp_register(void);
+extern void spu_overlay_register_region(uint32_t content_ea, uint32_t span, int image_id);
 extern void jobpm_spu_func_00000000(spu_context* ctx);
 
 void gh3_spu_register_all(void)
@@ -52,8 +57,28 @@ void gh3_spu_register_all(void)
     spu_begin_image(5); spu_0004_at_00C07280_spu_recomp_register();
     spu_workload_register_img(0xA8449E004479187EULL, spu_0004_at_00C07280_spu_func_00003010, 5, "spu_0004_at_00C07280");
     spu_begin_image(6); jobpm_spu_recomp_register();
-    jobbody_spu_recomp_register();   /* overlay at LS 0x5000, same image */
     spu_workload_register_img(0x21F48A8621295E5AULL, jobpm_spu_func_00000000, 6, "jobpm");
+    /* The job body is an OVERLAY: the PM streams whichever job's code it is
+     * about to run into LS 0x5000. Registered under image 6 it answered for
+     * EVERY job, so a job with different code (0x14B86900, 44 KB, first seen
+     * loading the frontend) silently ran the decompressor instead and never
+     * completed. Its own image, resident only while LS 0x5000 holds bytes
+     * GETted from 0x1011A300. */
+    spu_begin_image(7); jobbody_spu_recomp_register();
+    spu_overlay_register_region(0x1011A300u, 0x1790u, 7);
+    /* The other job bodies, captured with SPU_DUMP_OVL=<dir> (one file per
+     * source EA). Keyed by source EA: their heads are a generic nop/lnop pad
+     * a 16-byte content signature cannot tell apart. 0x14B8xxxx are heap
+     * copies the title loads from its data; the addresses are stable run to
+     * run here, and a moved one shows up as a miss, not as wrong code. */
+    spu_begin_image(8); job_14B86900_spu_recomp_register();
+    spu_overlay_register_region(0x14B86900u, 0xB000u, 8);
+    spu_begin_image(9); job_14B85000_spu_recomp_register();
+    spu_overlay_register_region(0x14B85000u, 0x1890u, 9);
+    spu_begin_image(10); job_10119580_spu_recomp_register();
+    spu_overlay_register_region(0x10119580u, 0xD10u, 10);
+    spu_begin_image(11); job_1011BB00_spu_recomp_register();
+    spu_overlay_register_region(0x1011BB00u, 0x2290u, 11);
     spu_begin_image(0);
 }
 

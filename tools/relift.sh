@@ -79,3 +79,23 @@ if [ -f "$JOBBODY" ]; then
     echo "NOTE: re-add the jobbody block to src/spu_gen/spu_workloads.c --"
     echo "      it registers under image 6, alongside the PM."
 fi
+
+# ---- the other job bodies (overlays at LS 0x5000) ---------------------------
+# The job PM streams whichever job's code it is about to run into LS 0x5000,
+# so each body is its own overlay image keyed by the EA it is GETted from (see
+# spu_workloads.c). Capture them all from a run that reaches the frontend:
+#
+#   SPU_DUMP_OVL=spu_miss/ovl ./build/gh3 vfs/PS3_GAME/USRDIR/EBOOT.elf
+#
+# 0x1011A300 is the decompressor, lifted above as jobbody.
+for J in spu_miss/ovl/ovl_*.bin; do
+    [ -f "$J" ] || continue
+    EA=$(basename "$J" .bin | sed 's/ovl_//')
+    [ "$EA" = "1011A300" ] && continue
+    python "$PS3RECOMP/tools/find_spu_functions.py" "$J" --raw --base 0x5000 \
+        --out "spu_miss/ovl/job_${EA}_funcs.json"
+    rm -rf "src/spu_gen/job_$EA" && mkdir -p "src/spu_gen/job_$EA"
+    python "$PS3RECOMP/tools/spu_lifter.py" "$J" --base 0x5000 \
+        --functions "spu_miss/ovl/job_${EA}_funcs.json" \
+        --symbol-prefix "job_${EA}_" -o "src/spu_gen/job_$EA"
+done
