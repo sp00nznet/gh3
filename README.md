@@ -18,7 +18,32 @@ Rock Band 3 runs Sony's MultiStream (`cellMS*`) audio middleware on the SPUs —
 104 markers — and in a rhythm game the audio path *is* the critical path. That
 is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
-## Status: renders its loading screen; stops in the decompression wait
+## Status: intro movies play, reaches attract mode (3D scene not visible yet)
+
+2026-09-24: the full boot runs unattended. The four Bink movies (ATVI, RO_LOGO,
+NS_LOGO, INTRO) play with sound. The title screen comes up, and after the idle
+timeout the game loads the attract demo: Art Deco venue, *The Seeker*, and the
+full band. It then shows attract mode's "Press any button to rock" overlay. The
+venue issues about 200 draw groups a frame, but they don't reach the screen, so
+the overlay sits on black. That's next.
+
+What stood between the title screen and attract mode, in order (fixes are in
+ps3recomp unless noted):
+
+| Symptom | Cause |
+|---|---|
+| Movies never opened | USRDIR flattening mapped to `<root>/USRDIR`, but this tree is disc layout (`PS3_GAME/USRDIR`) |
+| Movies rendered solid green | `fread` past the CRT buffer goes straight to `ReadFile`, and a kernel write into a not-yet-committed VM page fails. Bink got a short read, flagged ReadError and skipped every frame |
+| Movie froze at frame 60 | Lifter replaced a spill reload `ld r23,0x918(r1)` with the entry value of r23 from its restore slot (0x888). Bink's row loop never hit zero |
+| Froze on job 41 | A new SPU job body (0x14B91980), captured with `SPU_DUMP_OVL` and lifted as image 12 (this repo) |
+| Havok collide task spun forever | `MFC_RdAtomicStat` returned 0 after GETLLAR; hardware returns 4, and Havok's allocator loops until it sees it |
+| Physics step never finished | `cellSpursCreateTask` never freed a task id. Havok creates one per step, so step 128 failed |
+| Integrate task spun on a ticket lock | PPU `cellSyncMutexUnlock` (HLE CAS) raced SPU PUTLLC on the same mutex and was overwritten |
+| Run crawled at 4 fps unattended | Monitor asleep throttles vsync'd Present; the runtime now keeps the display awake |
+| Whole process froze at 0% CPU | The watchdog printed while a thread was suspended, and that thread held stderr's lock |
+
+The rest of this file is the earlier history, kept because it records what was
+measured.
 
 | Step | State |
 |---|---|

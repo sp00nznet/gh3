@@ -41,6 +41,7 @@ extern void job_14B86900_spu_recomp_register(void);
 extern void job_14B85000_spu_recomp_register(void);
 extern void job_10119580_spu_recomp_register(void);
 extern void job_1011BB00_spu_recomp_register(void);
+extern void job_14B91980_spu_recomp_register(void);
 extern void spu_overlay_register_region(uint32_t content_ea, uint32_t span, int image_id);
 extern void jobpm_spu_func_00000000(spu_context* ctx);
 
@@ -79,6 +80,10 @@ void gh3_spu_register_all(void)
     spu_overlay_register_region(0x10119580u, 0xD10u, 10);
     spu_begin_image(11); job_1011BB00_spu_recomp_register();
     spu_overlay_register_region(0x1011BB00u, 0x2290u, 11);
+    /* First streamed during the Bink intro: job 41, which the main thread
+     * waits on every frame from then on. Unlifted, the movie froze. */
+    spu_begin_image(12); job_14B91980_spu_recomp_register();
+    spu_overlay_register_region(0x14B91980u, 0x1E00u, 12);
     spu_begin_image(0);
 }
 

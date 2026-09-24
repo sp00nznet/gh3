@@ -88,6 +88,8 @@ fi
 #   SPU_DUMP_OVL=spu_miss/ovl ./build/gh3 vfs/PS3_GAME/USRDIR/EBOOT.elf
 #
 # 0x1011A300 is the decompressor, lifted above as jobbody.
+# 0x14B91980 (job 41) first streams during the Bink intro; a capture that
+# stops at the title screen misses it, so let the run reach attract mode.
 for J in spu_miss/ovl/ovl_*.bin; do
     [ -f "$J" ] || continue
     EA=$(basename "$J" .bin | sed 's/ovl_//')
