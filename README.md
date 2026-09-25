@@ -18,7 +18,45 @@ Rock Band 3 runs Sony's MultiStream (`cellMS*`) audio middleware on the SPUs —
 104 markers — and in a rhythm game the audio path *is* the critical path. That
 is the same shape that has Virtua Fighter 5 and Tokyo Jungle stuck. GH3 has 7.
 
-## Status: intro movies play, reaches attract mode (3D scene not visible yet)
+## Status: in gameplay at ~31 fps; the gameplay venue composites black
+
+2026-09-25: the save loads, the menus work, and Quickplay → Easy → Slow Ride
+plays with the highway, gems, HUD and audio. Attract mode shows the venue.
+
+**Frame rate** went from 7–9 fps to 31–32 fps in gameplay:
+
+| Cause | Fix |
+|---|---|
+| Nothing was optimised. The CMake caches carry empty `CMAKE_{C,CXX}_FLAGS_RELEASE`, and clang-cl without `/O` is `/Od` | `-O2` added explicitly here and in ps3recomp |
+| ~700 `getenv()` diagnostic gates, several per draw or per syscall. The UCRT scan was ~30% of the main PPU thread and ~35% of the RSX thread | `__imp_getenv` is a lock-free cache (boot_main.cpp) |
+| `[RSX null]` / `[evt]` lines printed every frame through stderr's lock | gated behind `ps3_log_verbose()` |
+
+Now the main PPU thread spends most of a frame in `func_0001A66C`, which waits
+for the SPU job queue to drain (a 100 µs usleep poll). The SPURS job threads
+are the next bottleneck.
+
+**The venue in gameplay.** The scene renders into 0x200000 correctly (see
+`LD_SURF_DUMP`). A gameplay-only full-screen draw then covers it. That draw has
+`rgb = tex(0x0C0A1E80)`, alpha ≥ 1, and blend src-alpha; its CSV `pso_key` is
+`ab823ddcaca097e6`. 0x0C0A1E80 is a 1040×592 render texture. At song load,
+`func_00486E8C` builds it with its own targets: colour 0x0C0A1E80 plus the
+scene's zeta 0x00C30000, and a 1×1 at 0x0C2FB280. Nothing ever renders into it.
+
+Checked and ruled out: RSX draws (surface registers and MRT), NV3089 blits,
+NV0039 (no subchannel-1 traffic), CALL, NOP gaps, SPU DMA (`SPU_DMA_RANGE`),
+PPU stores (a poked marker survives), the fragment program decode, the alpha
+test, vertex colour, the output mask, texture remap, and GPU reports.
+
+The render-texture object is only written at construction and read by its
+destructor (`func_004910A4`), which runs at song load. So the engine never
+binds it as a target. Skipping that one PSO (`LD_SKIP_PSO=ab823ddcaca097e6`)
+shows the venue behind the highway. The character-select 3D preview is
+missing, which is probably the same render-to-texture path.
+
+Next: find what should bind the render texture's target. In the Neversoft
+engine that is a viewport with a texture, probably set up by a script.
+
+## Earlier: intro movies play, reaches attract mode
 
 2026-09-24: the full boot runs unattended. The four Bink movies (ATVI, RO_LOGO,
 NS_LOGO, INTRO) play with sound. The title screen comes up, and after the idle
