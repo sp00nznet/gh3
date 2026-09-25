@@ -23,6 +23,12 @@ endif()
 message(STATUS "build type: ${CMAKE_BUILD_TYPE}")
 
 project(gh3 CXX C)
+# Release must actually optimise: the build cache here holds empty
+# CMAKE_{C,CXX}_FLAGS_RELEASE, and clang-cl with no /O flag is /Od, so the
+# lifted code ran unoptimised (GH3 gameplay ~13 fps). The runtime's own
+# semantics flags come along: lifted code does type-punned guest memory access
+# and must not grow FMAs the PPU/SPU did not have.
+add_compile_options($<$<CONFIG:Release,RelWithDebInfo>:-O2> -fno-strict-aliasing -ffp-contract=off)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD 17)
 
