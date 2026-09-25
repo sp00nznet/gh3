@@ -42,6 +42,8 @@ extern void job_14B85000_spu_recomp_register(void);
 extern void job_10119580_spu_recomp_register(void);
 extern void job_1011BB00_spu_recomp_register(void);
 extern void job_14B91980_spu_recomp_register(void);
+extern void job_1011DE00_spu_recomp_register(void);
+extern void job_10125600_spu_recomp_register(void);
 extern void spu_overlay_register_region(uint32_t content_ea, uint32_t span, int image_id);
 extern void jobpm_spu_func_00000000(spu_context* ctx);
 
@@ -84,6 +86,15 @@ void gh3_spu_register_all(void)
      * waits on every frame from then on. Unlifted, the movie froze. */
     spu_begin_image(12); job_14B91980_spu_recomp_register();
     spu_overlay_register_region(0x14B91980u, 0x1E00u, 12);
+    /* Streamed while the attract demo loads its venue; unlifted it ran in the
+     * SPU interpreter and the load crawled for minutes. */
+    spu_begin_image(13); job_1011DE00_spu_recomp_register();
+    spu_overlay_register_region(0x1011DE00u, 0x7800u, 13);
+    /* The body packed right after it in the EBOOT, streamed on its own. Both
+     * are file-backed, so they are extracted from the ELF rather than from an
+     * SPU_DUMP_OVL capture (list-DMA GETs slip past the dump hook). */
+    spu_begin_image(14); job_10125600_spu_recomp_register();
+    spu_overlay_register_region(0x10125600u, 0x8380u, 14);
     spu_begin_image(0);
 }
 
