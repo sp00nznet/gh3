@@ -3,6 +3,17 @@
 `BLUS30074`, disc release. Recompiled with
 [ps3recomp](https://github.com/sp00nznet/ps3recomp). Day one of this port.
 
+![Guitar Hero III running natively on Windows: Slow Ride in the Backyard](docs/media/hero.gif)
+
+| | |
+|---|---|
+| ![Title screen](docs/media/title.png) | ![Main menu](docs/media/main_menu.png) |
+| ![Setlist](docs/media/setlist.png) | ![Song intro](docs/media/song_intro.png) |
+| ![Gameplay](docs/media/gameplay_1.png) | ![Gameplay](docs/media/gameplay_2.png) |
+
+The window title shows the presented FPS, the draws in the last frame and the
+backbuffer size, e.g. `Guitar Hero III: Legends of Rock | FPS: 40.12 | draws: 1492 | 1280x720`.
+
 ## Why this title
 
 Picked over Rock Band 3 on measurement rather than taste. Both are "big game,
