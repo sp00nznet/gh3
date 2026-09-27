@@ -2,6 +2,28 @@
 
 Newest first. Fixes are in [ps3recomp](https://github.com/sp00nznet/ps3recomp) unless noted.
 
+## 2026-09-27: setlist harness, first full pass
+
+`tools/harness/songloop.sh <run> <n>` plays the Quickplay setlist with the bot
+and `report.py` writes a per-song HTML report (contact sheet, fps, flagged
+frames). This save unlocks 8 Quickplay songs (tiers 1-2, Slow Ride to
+Barracuda); at the end of the list DOWN does nothing and the loop replays the
+last song, so pass n=8. More songs need Career progress or the unlock cheat
+(`unlock_cheat` / `Cheat_UnlockAll`), which runs scripts rather than setting a
+flag.
+
+First pass: all 8 songs complete (bot 83-90% notes hit at ~30 fps), no black,
+flat or missing-highway frames. Two findings:
+
+- **Hang:** the second Barracuda of a session froze ~60 s in. The main thread
+  sits in `func_0001A66C` waiting for a SPURS job slot; slots 27 and 34 of the
+  job array (0x13598A00) stay marked in progress (`+0x1C = 1`) while the
+  job-policy SPUs keep polling -- the boot-time job-stall shape again. State
+  saved in `scratch/logs/hang1/`.
+- **Bot vs frame rate:** the bot feeds one note event per frame, so under host
+  load (<~20 fps) it misses dense passages and can fail a song. The harness
+  records that and takes NEW SONG.
+
 ## 2026-09-27: the bot plays, and songs have sound
 
 **Autoplay.** GH3 ships its own bot: `player1_status.bot_play`, read once by
