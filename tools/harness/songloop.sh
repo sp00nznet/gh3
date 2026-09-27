@@ -51,8 +51,13 @@ for i in $(seq 1 $N); do
     fi
     [ $gone -ge 2 ] || echo "TIMEOUT: song never ended" >> $d/fps.txt
     sleep 8; collect $d
-    sh $H/press.sh 0x4000:6 w10 0x0008:6 w10 >/dev/null 2>&1          # CONTINUE, accept high score
+    sh $H/press.sh 0x4000:6 w6 >/dev/null 2>&1                       # CONTINUE
     collect $d
+    last=$(ls $d/*.png 2>/dev/null | tail -1)
+    if [ -n "$last" ] && [ "$(python $H/screen.py "$last" | cut -d' ' -f1)" = hiscore ]; then
+        sh $H/press.sh 0x0008:6 w8 >/dev/null 2>&1                   # accept the high-score name
+        collect $d
+    fi
     echo "song $i: $(( $(date +%s) - t0 ))s, $(ls $d/*.png 2>/dev/null | wc -l) frames"
 done
 taskkill //F //IM gh3.exe >/dev/null 2>&1

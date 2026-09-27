@@ -3,6 +3,7 @@
   play     the five fret buttons are on screen (a song is being played)
   black    nearly black
   flat     nearly uniform (a hung or blank frame)
+  hiscore  the high-score name entry (pink score rows on the right)
   other    anything else (menus, results, loading, song intro)
 
 Fret-button check: the five buttons sit at fixed places along the bottom of
@@ -43,7 +44,15 @@ def classify(path):
         patch = im.crop((cx - dx, cy - dy, cx + dx, cy + dy))
         if hue_ok(ImageStat.Stat(patch).mean, want):
             hits += 1
-    return 'play' if hits >= 3 else 'other'
+    if hits >= 3:
+        return 'play'
+    pink = 0
+    for y in (190, 240, 290, 340):
+        for x in (760, 900, 1050):
+            cx, cy = x * w // 1280, y * h // 720
+            r, g, b = ImageStat.Stat(im.crop((cx - 6, cy - 3, cx + 6, cy + 3))).mean
+            pink += r > g + 25 and b > g + 10
+    return 'hiscore' if pink >= 8 else 'other'
 
 
 if __name__ == '__main__':
