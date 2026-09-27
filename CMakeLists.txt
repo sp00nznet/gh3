@@ -28,7 +28,7 @@ project(gh3 CXX C)
 # lifted code ran unoptimised (GH3 gameplay ~13 fps). The runtime's own
 # semantics flags come along: lifted code does type-punned guest memory access
 # and must not grow FMAs the PPU/SPU did not have.
-add_compile_options($<$<CONFIG:Release,RelWithDebInfo>:-O2> -fno-strict-aliasing -ffp-contract=off)
+add_compile_options($<$<CONFIG:Release,RelWithDebInfo>:-O2> -fno-strict-aliasing -ffp-contract=off -msse4.1)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD 17)
 

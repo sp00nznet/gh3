@@ -2,6 +2,31 @@
 
 Newest first. Fixes are in [ps3recomp](https://github.com/sp00nznet/ps3recomp) unless noted.
 
+## 2026-09-27: the bot plays, and songs have sound
+
+**Autoplay.** GH3 ships its own bot: `player1_status.bot_play`, read once by
+`gem_scroller` when a song starts, which then feeds the note iterator from
+the chart instead of the pad. `tools/harness/bot.sh` finds that struct
+member in guest memory through the debug console (`find32 20D0AD37`, type
+byte 0x81) and sets it; `botsong.sh` boots, sets it in the menus and starts
+Slow Ride. The bot builds a 4x multiplier, fills star power ("Star Power
+Ready", tubes lit), keeps the rock meter green and reaches the song end.
+
+**Static in songs** was the audio engine starving, not a crowd sample.
+GH3 mixes with FMOD, which runs as a SPURS task on an SPU. Fixes, all in
+ps3recomp:
+
+| Cause | Fix |
+|---|---|
+| The cellAudio mixer ran ~20% fast (225 blocks/s, not 187.5) and the device dropped the surplus | pace to WASAPI padding |
+| PPU event-flag set/clear raced the SPU task library's atomics on the same line; a lost wait deadlocked FMOD at boot in some runs | RMW under the lock-line lock |
+| Four idle SPURS job pollers hammered the lock-line spinlock; FMOD's task waited 25-40 ms | TTAS lock, yield on idle poll |
+| FMOD's SPU task was ~90% busy, a third of it runtime overhead (byte-loop shufb, out-of-line LS load/store, an LS watchpoint check on every access) | pshufb shufb (`-msse4.1`), inlined LS paths |
+
+Song silence went from ~55% to ~3% of audio blocks. It rises again when the
+host is saturated (other builds running), because the FMOD task needs a
+free core.
+
 ## 2026-09-25: gameplay renders complete at ~40 fps
 
 2026-09-25: the save loads, the menus work, and Quickplay → Easy → Slow Ride
