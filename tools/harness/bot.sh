@@ -10,6 +10,6 @@ n=0
 for a in $(dbg "find32 20D0AD37" | grep -o "0x[0-9A-F]\{8\}"); do
     pre=$(printf "%X" $((a - 4)))
     dbg "mem $pre 4" | grep -q " 00 81 00 00 " || continue
-    dbg "poke32 $(printf "%X" $((a + 4))) 1" >/dev/null; n=$((n + 1))
+    dbg "poke32 $(printf "%X" $((a + 4))) 1" >/dev/null; n=$((n + 1)); addrs="$addrs $(printf "%X" $((a + 4)))"
 done
-echo "bot_play set in $n struct(s)"
+echo "bot_play set in $n struct(s):$addrs"
