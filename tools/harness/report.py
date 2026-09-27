@@ -40,7 +40,7 @@ def song(d):
     flags = [(os.path.basename(f), s) for f, s in zip(frames, states) if s in ('black', 'flat')]
     flags += [(os.path.basename(frames[i]), 'highway gone mid-song')
               for i in range(first + 1, last) if states[i] != 'play']
-    end = ('timeout' if 'TIMEOUT' in log else 'exited' if 'exited' in log
+    end = ('FAILED' if 'FAILED' in log else 'timeout' if 'TIMEOUT' in log else 'exited' if 'exited' in log
            else 'completed' if 'play' in states else 'never started')
     return {
         'frames': frames, 'played': states.count('play'), 'end': end, 'flags': flags,

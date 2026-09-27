@@ -51,6 +51,14 @@ for i in $(seq 1 $N); do
     fi
     [ $gone -ge 2 ] || echo "TIMEOUT: song never ended" >> $d/fps.txt
     sleep 8; collect $d
+    last=$(ls $d/*.png 2>/dev/null | tail -1)
+    if [ -n "$last" ] && [ "$(python $H/screen.py "$last" | cut -d' ' -f1)" = failed ]; then
+        # The bot misses when the game drops well below 30 fps (it feeds one
+        # note event per frame). Record it and take NEW SONG, not RETRY.
+        echo "FAILED" >> $d/fps.txt
+        sh $H/press.sh 0x0040:3 w2 0x4000:6 w8 >/dev/null 2>&1
+        collect $d; echo "song $i: FAILED after $(( $(date +%s) - t0 ))s"; continue
+    fi
     sh $H/press.sh 0x4000:6 w6 >/dev/null 2>&1                       # CONTINUE
     collect $d
     last=$(ls $d/*.png 2>/dev/null | tail -1)

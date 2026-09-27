@@ -4,6 +4,8 @@
   black    nearly black
   flat     nearly uniform (a hung or blank frame)
   hiscore  the high-score name entry (pink score rows on the right)
+  failed   the "Song Failed" menu (a red frame over the venue; the results
+           page that follows a win is neutral grey)
   other    anything else (menus, results, loading, song intro)
 
 Fret-button check: the five buttons sit at fixed places along the bottom of
@@ -52,7 +54,10 @@ def classify(path):
             cx, cy = x * w // 1280, y * h // 720
             r, g, b = ImageStat.Stat(im.crop((cx - 6, cy - 3, cx + 6, cy + 3))).mean
             pink += r > g + 25 and b > g + 10
-    return 'hiscore' if pink >= 8 else 'other'
+    if pink >= 8:
+        return 'hiscore'
+    r, g, b = ImageStat.Stat(im.crop((w * 30 // 100, h * 25 // 100, w * 70 // 100, h * 75 // 100))).mean
+    return 'failed' if r > b + 20 and r > g + 15 else 'other'
 
 
 if __name__ == '__main__':
