@@ -10,8 +10,10 @@ L=${GH3_LOGS:-/g/recomp/ps3games/gh3/scratch/logs}; W=$(cygpath -m "$L")
 RUN=$1; N=$2; shift 2
 OUT=$L/songs/$RUN; rm -rf "$OUT"; mkdir -p "$OUT"
 EVERY=${EVERY:-300} sh $H/boot.sh $RUN PS3_DEBUG=$W/dbg.txt "$@" >/dev/null 2>&1
+sh $H/press.sh 0x2000:6 w4 >/dev/null 2>&1   # CIRCLE: out of Career's band-name prompt if a boot press opened it
+sh $H/unlock.sh                               # every 'unlocked' tag: the whole setlist
 sh $H/bot.sh
-sh $H/press.sh w25 0x0040:3 0x0040:3 0x4000:6 w3 0x4000:6 w5 >/dev/null 2>&1   # -> setlist
+sh $H/press.sh w5 0x0040:3 0x0040:3 0x4000:6 w3 0x4000:6 w5 >/dev/null 2>&1   # -> setlist
 title() { powershell -c "(Get-Process gh3 -ErrorAction SilentlyContinue).MainWindowTitle" | tr -d '\r'; }
 # Move new frames into a song dir as 640x360 PNGs.
 collect() { python - "$L/frames" "$1" <<'EOF'
@@ -33,7 +35,16 @@ FIRST=${FIRST:-1}                            # FIRST=n: start at the n-th song
 for k in $(seq 2 $FIRST); do sh $H/press.sh 0x0040:3 w1 >/dev/null 2>&1; done
 for i in $(seq $FIRST $((FIRST + N - 1))); do
     d=$OUT/$(printf %02d $i); mkdir -p $d
-    [ $i -gt $FIRST ] && sh $H/press.sh 0x0040:3 w2 >/dev/null 2>&1     # DOWN to the next song
+    if [ $i -gt $FIRST ]; then
+        # DOWN to the next song. At the bottom of the list DOWN does nothing, so
+        # compare the setlist before and after: unchanged means the run is over.
+        sleep 12; collect $d; before=$(ls $d/*.png 2>/dev/null | tail -1)
+        sh $H/press.sh 0x0040:3 w12 >/dev/null 2>&1; collect $d; after=$(ls $d/*.png 2>/dev/null | tail -1)
+        if [ -n "$before" ] && [ -n "$after" ] && python $H/screen.py --same "$before" "$after"; then
+            echo "end of the setlist" >> $d/fps.txt; rm -rf $d; break
+        fi
+        rm -f $d/*.png
+    fi
     sh $H/bot.sh >> $d/fps.txt              # every song: the flag may be reset in between
     sh $H/press.sh 0x4000:6 >/dev/null 2>&1                          # start it
     t0=$(date +%s); seen=0; gone=0

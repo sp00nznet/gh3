@@ -65,6 +65,16 @@ def classify(path):
     return 'failed' if r > b + 20 and r > g + 15 and dark else 'other'
 
 
+def same(a, b):
+    """Two frames show the same screen (mean absolute difference, greyscale)."""
+    from PIL import ImageChops
+    x = Image.open(a).convert('L').resize((160, 90))
+    y = Image.open(b).convert('L').resize((160, 90))
+    return ImageStat.Stat(ImageChops.difference(x, y)).mean[0] < 3
+
+
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--same']:
+        sys.exit(0 if same(sys.argv[2], sys.argv[3]) else 1)
     for p in sys.argv[1:]:
         print(classify(p), p)
