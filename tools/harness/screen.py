@@ -57,7 +57,12 @@ def classify(path):
     if pink >= 8:
         return 'hiscore'
     r, g, b = ImageStat.Stat(im.crop((w * 30 // 100, h * 25 // 100, w * 70 // 100, h * 75 // 100))).mean
-    return 'failed' if r > b + 20 and r > g + 15 else 'other'
+    # Reddish centre alone also matches some venues' results newspapers; the
+    # failed menu sits over the dimmed venue, so both flanks are dark too.
+    gray = im.convert('L')
+    side = lambda x0, x1: ImageStat.Stat(gray.crop((w * x0 // 100, h * 30 // 100, w * x1 // 100, h * 80 // 100))).mean[0]
+    dark = side(5, 25) < 70 and side(75, 95) < 70
+    return 'failed' if r > b + 20 and r > g + 15 and dark else 'other'
 
 
 if __name__ == '__main__':

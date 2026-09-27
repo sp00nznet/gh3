@@ -29,9 +29,11 @@ for f in sorted(os.listdir(src)):
 EOF
 }
 collect "$OUT"; rm -f "$OUT"/*.png          # boot and menu frames are not a song
-for i in $(seq 1 $N); do
+FIRST=${FIRST:-1}                            # FIRST=n: start at the n-th song
+for k in $(seq 2 $FIRST); do sh $H/press.sh 0x0040:3 w1 >/dev/null 2>&1; done
+for i in $(seq $FIRST $((FIRST + N - 1))); do
     d=$OUT/$(printf %02d $i); mkdir -p $d
-    [ $i -gt 1 ] && sh $H/press.sh 0x0040:3 w2 >/dev/null 2>&1     # DOWN to the next song
+    [ $i -gt $FIRST ] && sh $H/press.sh 0x0040:3 w2 >/dev/null 2>&1     # DOWN to the next song
     sh $H/bot.sh >> $d/fps.txt              # every song: the flag may be reset in between
     sh $H/press.sh 0x4000:6 >/dev/null 2>&1                          # start it
     t0=$(date +%s); seen=0; gone=0
