@@ -1,21 +1,24 @@
 #!/bin/sh
-# songloop.sh <run> <nsongs> [ENV=..]: boot, bot_play on, Quickplay -> Easy,
-# then play the setlist from the top: each song to its results screen, back to
-# the setlist, next one down. Per song: frames (PNG, every ~10 s) in
-# $L/songs/<run>/NN/, fps/draws samples in NN/fps.txt, and index.html
-# (report.py). Stops at the first song that never starts.
-# The end of a song is the fret buttons leaving the screen (screen.py).
+# songloop.sh <run> <nsongs> [ENV=..]: boot, unlock, bot_play on, Quickplay ->
+# Easy, then play the setlist: each song to its results screen, back to the
+# setlist, next one down. Per song: frames (PNG, every ~10 s) in
+# $L/songs/<run>/NN/ and fps/draws samples in NN/fps.txt.
+#   FIRST=n   start at the n-th song (resume); earlier song dirs are kept
+# Exit: 0 at the end of the setlist, 3 when the game hung (NN/HANG, job-slot
+# dump in NN/hang_slots.txt, next song in $OUT/.next -- runall.sh resumes).
+# A song ends when the fret buttons leave the screen (screen.py).
 H=$(cd "$(dirname "$0")" && pwd)
 L=${GH3_LOGS:-/g/recomp/ps3games/gh3/scratch/logs}; W=$(cygpath -m "$L")
 RUN=$1; N=$2; shift 2
-OUT=$L/songs/$RUN; rm -rf "$OUT"; mkdir -p "$OUT"
+FIRST=${FIRST:-1}
+OUT=$L/songs/$RUN; [ $FIRST = 1 ] && rm -rf "$OUT"; mkdir -p "$OUT"
 EVERY=${EVERY:-300} sh $H/boot.sh $RUN PS3_DEBUG=$W/dbg.txt "$@" >/dev/null 2>&1
 sh $H/press.sh 0x2000:6 w4 >/dev/null 2>&1   # CIRCLE: out of Career's band-name prompt if a boot press opened it
 sh $H/unlock.sh                               # every 'unlocked' tag: the whole setlist
 sh $H/bot.sh
 sh $H/press.sh w5 0x0040:3 0x0040:3 0x4000:6 w3 0x4000:6 w5 >/dev/null 2>&1   # -> setlist
 title() { powershell -c "(Get-Process gh3 -ErrorAction SilentlyContinue).MainWindowTitle" | tr -d '\r'; }
-# Move new frames into a song dir as 640x360 PNGs.
+# Move new frames into a dir as 640x360 PNGs.
 collect() { python - "$L/frames" "$1" <<'EOF'
 import os, sys
 from PIL import Image
@@ -30,38 +33,49 @@ for f in sorted(os.listdir(src)):
             pass            # still being written; next pass takes it
 EOF
 }
-collect "$OUT"; rm -f "$OUT"/*.png          # boot and menu frames are not a song
-FIRST=${FIRST:-1}                            # FIRST=n: start at the n-th song
-for k in $(seq 2 $FIRST); do sh $H/press.sh 0x0040:3 w1 >/dev/null 2>&1; done
+NAV=$OUT/_nav; mkdir -p $NAV
+# DOWN once, confirmed: the setlist must change. Returns 1 at the bottom of the
+# list (three presses that move nothing).
+down() {
+    for try in 1 2 3; do
+        sleep 12; collect $NAV; before=$(ls $NAV/*.png 2>/dev/null | tail -1)
+        sh $H/press.sh 0x0040:3 w12 >/dev/null 2>&1; collect $NAV; after=$(ls $NAV/*.png 2>/dev/null | tail -1)
+        rm -f $NAV/*.png
+        [ -n "$before" ] && [ -n "$after" ] && ! python $H/screen.py --same "$before" "$after" && return 0
+    done
+    return 1
+}
+collect $NAV; rm -f $NAV/*.png                # boot and menu frames are not a song
+for k in $(seq 2 $FIRST); do down || { echo "setlist shorter than FIRST=$FIRST"; exit 1; }; done
 for i in $(seq $FIRST $((FIRST + N - 1))); do
-    d=$OUT/$(printf %02d $i); mkdir -p $d
-    if [ $i -gt $FIRST ]; then
-        # DOWN to the next song. At the bottom of the list DOWN does nothing, so
-        # compare the setlist before and after: unchanged means the run is over.
-        sleep 12; collect $d; before=$(ls $d/*.png 2>/dev/null | tail -1)
-        sh $H/press.sh 0x0040:3 w12 >/dev/null 2>&1; collect $d; after=$(ls $d/*.png 2>/dev/null | tail -1)
-        if [ -n "$before" ] && [ -n "$after" ] && python $H/screen.py --same "$before" "$after"; then
-            echo "end of the setlist" >> $d/fps.txt; rm -rf $d; break
-        fi
-        rm -f $d/*.png
-    fi
+    d=$OUT/$(printf %02d $i)
+    if [ $i -gt $FIRST ] && ! down; then echo "end of the setlist after song $((i - 1))"; break; fi
+    rm -rf $d; mkdir -p $d
     sh $H/bot.sh >> $d/fps.txt              # every song: the flag may be reset in between
     sh $H/press.sh 0x4000:6 >/dev/null 2>&1                          # start it
-    t0=$(date +%s); seen=0; gone=0
+    t0=$(date +%s); seen=0; gone=0; frames=0; still=0
     # Over when the fret buttons have been on screen and then are gone from two
     # consecutive frames (results, failure, pause -- anything but the highway).
     while [ $(( $(date +%s) - t0 )) -lt 600 ]; do
         sleep 10; collect $d
         tasklist | grep -q gh3.exe || { echo "gh3 exited" >> $d/fps.txt; exit 1; }
+        n=$(ls $d/*.png 2>/dev/null | wc -l)
+        if [ $n = $frames ]; then still=$((still + 1)); else still=0; frames=$n; fi
+        if [ $still -ge 8 ]; then
+            # No new frame in ~90 s: the game hung. Keep the SPURS job table
+            # (the known hang leaves two job slots marked in progress).
+            echo "HANG: no new frame for ~90 s" >> $d/fps.txt; : > $d/HANG
+            : > $L/dbg.txt.out; echo "mem 13598A00 1984" > $L/dbg.txt; sleep 5; cp $L/dbg.txt.out $d/hang_slots.txt
+            echo $((i + 1)) > $OUT/.next; echo "song $i: HANG after $(( $(date +%s) - t0 ))s"
+            taskkill //F //IM gh3.exe >/dev/null 2>&1; exit 3
+        fi
         last=$(ls $d/*.png 2>/dev/null | tail -1); [ -n "$last" ] || continue
         state=$(python $H/screen.py "$last" | cut -d' ' -f1)
         echo "$(( $(date +%s) - t0 ))s $state $(title)" >> $d/fps.txt
         if [ "$state" = play ]; then seen=1; gone=0
         elif [ $seen = 1 ]; then gone=$((gone + 1)); [ $gone -ge 2 ] && break; fi
     done
-    if [ $seen = 0 ]; then       # locked, or past the last unlocked song: the run is over
-        echo "TIMEOUT: song never started -- end of the playable setlist" >> $d/fps.txt; break
-    fi
+    [ $seen = 0 ] && { echo "TIMEOUT: song never started" >> $d/fps.txt; break; }
     [ $gone -ge 2 ] || echo "TIMEOUT: song never ended" >> $d/fps.txt
     sleep 8; collect $d
     last=$(ls $d/*.png 2>/dev/null | tail -1)
@@ -81,5 +95,6 @@ for i in $(seq $FIRST $((FIRST + N - 1))); do
     fi
     echo "song $i: $(( $(date +%s) - t0 ))s, $(ls $d/*.png 2>/dev/null | wc -l) frames"
 done
+rm -f $OUT/.next
 taskkill //F //IM gh3.exe >/dev/null 2>&1
-python $H/report.py $OUT
+exit 0
