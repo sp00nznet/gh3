@@ -40,8 +40,8 @@ down() {
     for try in 1 2 3; do
         sleep 12; collect $NAV; before=$(ls $NAV/*.png 2>/dev/null | tail -1)
         sh $H/press.sh 0x0040:3 w12 >/dev/null 2>&1; collect $NAV; after=$(ls $NAV/*.png 2>/dev/null | tail -1)
-        rm -f $NAV/*.png
-        [ -n "$before" ] && [ -n "$after" ] && ! python $H/screen.py --same "$before" "$after" && return 0
+        moved=1; [ -n "$before" ] && [ -n "$after" ] && ! python $H/screen.py --same "$before" "$after" && moved=0
+        rm -f $NAV/*.png; [ $moved = 0 ] && return 0
     done
     return 1
 }
