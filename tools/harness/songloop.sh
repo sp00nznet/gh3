@@ -67,6 +67,7 @@ for i in $(seq $FIRST $((FIRST + N - 1))); do
             echo "HANG: no new frame for ~90 s" >> $d/fps.txt; : > $d/HANG
             : > $L/dbg.txt.out; echo "mem 13598A00 1984" > $L/dbg.txt; sleep 5; cp $L/dbg.txt.out $d/hang_slots.txt
             : > $L/dbg.txt.out; echo "jobwatch $(cygpath -m $d)/jobwatch.txt" > $L/dbg.txt; sleep 10   # JOBWATCH runs only
+            cp $L/$RUN.log $d/run.log 2>/dev/null   # the resume truncates it
             echo $((i + 1)) > $OUT/.next; echo "song $i: HANG after $(( $(date +%s) - t0 ))s"
             taskkill //F //IM gh3.exe >/dev/null 2>&1; exit 3
         fi
