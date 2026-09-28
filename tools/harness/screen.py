@@ -73,7 +73,18 @@ def same(a, b):
     return ImageStat.Stat(ImageChops.difference(x, y)).mean[0] < 3
 
 
+def badge(src, dst):
+    """Crop the results page's "NN% NOTES HIT" badge, 4x, for OCR (ocr.ps1).
+    Windows OCR misses the slanted digits at frame size and reads them here."""
+    im = Image.open(src).convert('RGB')
+    w, h = im.size
+    box = (w * 135 // 640, h * 245 // 360, w * 245 // 640, h * 300 // 360)
+    im.crop(box).resize((440, 220), Image.LANCZOS).save(dst)
+
+
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--badge']:
+        sys.exit(badge(sys.argv[2], sys.argv[3]))
     if sys.argv[1:2] == ['--same']:
         sys.exit(0 if same(sys.argv[2], sys.argv[3]) else 1)
     for p in sys.argv[1:]:

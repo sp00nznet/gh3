@@ -88,6 +88,14 @@ for i in $(seq $FIRST $((FIRST + N - 1))); do
         sh $H/press.sh 0x0040:3 w2 0x4000:6 w8 >/dev/null 2>&1
         collect $d; echo "song $i: FAILED after $(( $(date +%s) - t0 ))s"; continue
     fi
+    # Results page: read the "NN% NOTES HIT" badge. Under 100% = the bot missed,
+    # which means frames came late (host load), not wrong notes.
+    notes=?
+    if [ -n "$last" ] && python $H/screen.py --badge "$last" $d/badge.png; then
+        notes=$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w $H/ocr.ps1)" "$(cygpath -w $d/badge.png)" |
+                grep -o '[0-9]\{1,3\}%' | head -1)
+    fi
+    echo "NOTES ${notes:-?}" >> $d/fps.txt
     sh $H/press.sh 0x4000:6 w6 >/dev/null 2>&1                       # CONTINUE
     collect $d
     last=$(ls $d/*.png 2>/dev/null | tail -1)
@@ -101,7 +109,7 @@ for i in $(seq $FIRST $((FIRST + N - 1))); do
             sh $H/press.sh 0x2000:6 w8 >/dev/null 2>&1; collect $d
         fi
     fi
-    echo "song $i: $(( $(date +%s) - t0 ))s, $(ls $d/*.png 2>/dev/null | wc -l) frames"
+    echo "song $i: $(( $(date +%s) - t0 ))s, $(ls $d/*.png 2>/dev/null | wc -l) frames, notes ${notes:-?}"
 done
 rm -f $OUT/.next
 taskkill //F //IM gh3.exe >/dev/null 2>&1

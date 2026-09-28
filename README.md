@@ -19,25 +19,23 @@ backbuffer size, e.g. `Guitar Hero III: Legends of Rock | FPS: 40.12 | draws: 14
 Boots through the intro movies, menus and save load into gameplay, with the
 venue, band, highway, fretboard, gems, HUD, star power and song audio.
 
-**Playthrough (2026-09-27):** GH3's own bot (`bot_play`) played the entire
+**Playthrough (2026-09-28):** GH3's own bot (`bot_play`) played the entire
 Quickplay setlist, all 45 songs on Easy, unattended with
 [`tools/harness`](tools/harness):
 
 | | |
 |---|---|
-| Songs completed | 41 of 45 on the first pass; the bot hits 83-100% of notes |
-| Hangs | 4 (songs 25, 27, 34, 42), about one per 10 songs, each 30-60 s into a song |
+| Songs completed | 45 of 45, none failed |
+| Hangs | none (the once-per-~10-songs freeze is fixed, see [docs/progress.md](docs/progress.md)) |
+| Notes hit | 100% on a quiet machine; a note or two goes when other work loads the CPU |
 | Rendering | no black, blank or missing-highway frames (8 flagged frames are dark intros) |
-| Frame rate | ~40 fps in songs, 50-60 in menus |
-
-Every hang has the same shape: two SPURS jobs are taken by a job-policy SPU and
-never completed, and the main thread waits on them for good (details in
-[docs/progress.md](docs/progress.md)).
+| Frame rate | 30-40 fps in songs, 50-60 in menus |
 
 ### What "complete" still needs
 
-1. **The job hang.** One freeze per ~10 songs is not playable. Next: log each
-   SPURS job's claim and completion, catch which job is abandoned and why.
+1. **60 fps.** The main limit now. Frames arrive late under host load and the
+   game judges notes by frame, so a busy PC costs notes. The SPURS job
+   threads are the bottleneck.
 2. **Real input.** The runtime reads XInput pads (plus a keyboard fallback),
    so an Xbox-style controller works as a PS3 pad today. Guitars need:
    report the pad as a guitar (`pclass_type`), map frets, strum, whammy and
@@ -46,9 +44,7 @@ never completed, and the main thread waits on them for good (details in
 3. **Timing.** A rhythm game lives on audio/video/input latency: check the
    in-game calibration against real play. Song audio was starving until
    2026-09-27 (fixed in ps3recomp); confirm by ear on a quiet machine.
-4. **60 fps.** The SPURS job threads are the bottleneck. The bot also plays
-   better with frame rate: it feeds one note event per frame.
-5. **Modes beyond Quickplay.** Career (boss battles, encores, cutscenes,
+4. **Modes beyond Quickplay.** Career (boss battles, encores, cutscenes,
    progress saves), co-op and local multiplayer. Online is out of scope.
 
 - [docs/progress.md](docs/progress.md): what was fixed at each milestone

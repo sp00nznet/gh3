@@ -2,6 +2,30 @@
 
 Newest first. Fixes are in [ps3recomp](https://github.com/sp00nznet/ps3recomp) unless noted.
 
+## 2026-09-28: the song freeze, fixed
+
+About one song in 10-15 froze: the main thread waited forever on SPURS jobs
+that a job-manager SPU had claimed and then abandoned. That SPU had died in
+the job manager's own assert (`heqi` at jobpm 0x820, "DMA tag <= 31") while
+walking its 7-entry buffer loop (0xAA0..0xB58) with a loop counter of 8, 9, 10.
+
+The counter had been clobbered by the job, not by the loop. Some jobs arrive
+in local store at run time and were never lifted, so they run in the SPU
+interpreter, which handed back to compiled code only at a lifted function
+*entry*. A job's return point (0xBA8) sits mid-function, so the interpreter
+ran on through the job manager's own code, into the next buffer loop, until
+it met a lifted entry (0xB28). The runtime then ran that stretch again, now
+with the job's registers. The telltale log line:
+`drain-resume return_pc=0x00BA8 at lifted entry 0x00B28`.
+
+Fix (ps3recomp 0f22fa9 + fff4b49): the interpreter also stops at the pending call's
+return point. Then the whole 45-song setlist played with no freeze (it had
+frozen on song 9 in the run before).
+
+The harness now reads each song's "NN% NOTES HIT" badge with Windows' own
+OCR (`tools/harness/ocr.ps1`) and flags anything under 100%: a miss means
+frames came late, which is what 60 fps work has to fix.
+
 ## 2026-09-27: setlist harness, first full pass
 
 `tools/harness/songloop.sh <run> <n>` plays the Quickplay setlist with the bot

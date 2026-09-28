@@ -42,7 +42,9 @@ def song(d):
               for i in range(first + 1, last) if states[i] != 'play']
     end = ('HANG' if 'HANG' in log else 'FAILED' if 'FAILED' in log else 'timeout' if 'TIMEOUT' in log else 'exited' if 'exited' in log
            else 'completed' if 'play' in states else 'never started')
+    notes = re.search(r'NOTES (\S+)', log)
     return {
+        'notes': notes.group(1) if notes else '-',
         'frames': frames, 'played': states.count('play'), 'end': end, 'flags': flags,
         'fps': (statistics.median(fps), min(fps), max(fps)) if fps else None,
         'zero_draw': sum(1 for x in draws if x == 0), 'samples': len(draws),
@@ -57,8 +59,9 @@ def main(run):
         img = 'sheet_%s.jpg' % s
         sheet(r['frames'], os.path.join(run, img))
         fps = '%.1f (%.1f-%.1f)' % r['fps'] if r['fps'] else '-'
-        rows.append('<tr><td>%s</td><td>%s</td><td>%d / %d</td><td>%s</td><td>%d</td></tr>' % (
-            s, r['end'], r['played'], len(r['frames']), fps, len(r['flags'])))
+        miss = r['notes'] not in ('-', '?', '100%')
+        rows.append('<tr><td>%s</td><td>%s</td><td%s>%s</td><td>%d / %d</td><td>%s</td><td>%d</td></tr>' % (
+            s, r['end'], ' style="color:#f80"' if miss else '', r['notes'], r['played'], len(r['frames']), fps, len(r['flags'])))
         flags = ''.join('<li>%s: %s</li>' % (html.escape(f), html.escape(w)) for f, w in r['flags'])
         blocks.append('<h2>Song %s: %s</h2><p>fps median (min-max): %s; zero-draw samples: %d of %d</p>'
                       '<ul>%s</ul><img src="%s" alt="song %s frames">' % (
@@ -66,7 +69,7 @@ def main(run):
     page = ('<!doctype html><meta charset="utf-8"><title>GH3 song run</title>'
             '<style>body{font-family:sans-serif;background:#111;color:#ddd;margin:16px}'
             'img{max-width:100%%}table{border-collapse:collapse}td,th{border:1px solid #444;padding:4px 8px}</style>'
-            '<h1>GH3 bot-play run: %s</h1><table><tr><th>song</th><th>end</th><th>play frames</th>'
+            '<h1>GH3 bot-play run: %s</h1><table><tr><th>song</th><th>end</th><th>notes hit</th><th>play frames</th>'
             '<th>fps</th><th>flags</th></tr>%s</table>%s') % (
                 html.escape(os.path.basename(os.path.normpath(run))), ''.join(rows), ''.join(blocks))
     open(os.path.join(run, 'index.html'), 'w', encoding='utf-8').write(page)

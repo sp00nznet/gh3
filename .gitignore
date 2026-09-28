@@ -12,3 +12,4 @@ scratch/
 spu_miss/
 *.log
 src/spu_gen/*/
+__pycache__/
