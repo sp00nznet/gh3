@@ -94,6 +94,12 @@ for i in $(seq $FIRST $((FIRST + N - 1))); do
     if [ -n "$last" ] && [ "$(python $H/screen.py "$last" | cut -d' ' -f1)" = hiscore ]; then
         sh $H/press.sh 0x0008:6 w8 >/dev/null 2>&1                   # accept the high-score name
         collect $d
+        # No new entry (the table is already full of better scores): the same
+        # screen is view-only and START does nothing -- back out of it.
+        last=$(ls $d/*.png 2>/dev/null | tail -1)
+        if [ -n "$last" ] && [ "$(python $H/screen.py "$last" | cut -d' ' -f1)" = hiscore ]; then
+            sh $H/press.sh 0x2000:6 w8 >/dev/null 2>&1; collect $d
+        fi
     fi
     echo "song $i: $(( $(date +%s) - t0 ))s, $(ls $d/*.png 2>/dev/null | wc -l) frames"
 done
